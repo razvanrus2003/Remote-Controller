@@ -1,0 +1,141 @@
+:root {
+  --primary-color: #2196F3;
+  --secondary-color: #FF9800;
+  --success-color: #4CAF50;
+  --danger-color: #F44336;
+  --warning-color: #FFC107;
+  --text-primary: #212121;
+  --text-secondary: #757575;
+  --bg-primary: #FFFFFF;
+  --bg-secondary: #F5F5F5;
+  --border-color: #E0E0E0;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  background: linear-gradient(135deg, var(--primary-color) 0%, #1976D2 100%);
+  color: white;
+  padding: 2rem 2rem;
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.app-header h1 {
+  font-size: 2rem;
+  font-weight: 600;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 20px;
+  font-weight: 500;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #ccc;
+  animation: pulse 2s infinite;
+}
+
+.status-indicator.connected .status-dot {
+  background-color: var(--success-color);
+}
+
+.status-indicator.disconnected .status-dot {
+  background-color: var(--danger-color);
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.app-main {
+  flex: 1;
+  padding: 2rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+  max-width: 1600px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.control-section {
+  grid-column: 1;
+  grid-row: 1 / 3;
+}
+
+.visualization-grid {
+  grid-column: 2;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2rem;
+}
+
+@media (max-width: 1200px) {
+  .app-main {
+    grid-template-columns: 1fr;
+  }
+
+  .control-section {
+    grid-column: 1;
+  }
+
+  .visualization-grid {
+    grid-column: 1;
+  }
+}
+
+@media (max-width: 768px) {
+  .app-header {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .app-header h1 {
+    font-size: 1.5rem;
+  }
+
+  .app-main {
+    padding: 1rem;
+    gap: 1rem;
+  }
+}

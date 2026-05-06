@@ -15,6 +15,24 @@
   border-bottom: 2px solid var(--border-color);
 }
 
+.position-status {
+  align-self: flex-start;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.position-status.connected {
+  background: #E8F5E9;
+  color: #2e7d32;
+}
+
+.position-status.disconnected {
+  background: #FFEBEE;
+  color: #c62828;
+}
+
 .position-grid {
   display: grid;
   grid-template-columns: 2fr 1fr;
@@ -74,6 +92,10 @@
   font-size: 1.5rem;
   font-weight: 700;
   color: var(--primary-color);
+}
+
+.stat-value.small {
+  font-size: 1.1rem;
 }
 
 .telemetry-graph {

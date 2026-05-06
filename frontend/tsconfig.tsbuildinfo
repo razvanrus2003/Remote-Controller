@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/RobotControlPanel.tsx","./src/components/RobotPosition.tsx","./src/components/SensorVisualization.tsx"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/HealthDashboard.tsx","./src/components/RobotControlPanel.tsx","./src/components/RobotPosition.tsx","./src/components/SensorVisualization.tsx","./src/components/VideoFeed.tsx"],"version":"5.9.3"}

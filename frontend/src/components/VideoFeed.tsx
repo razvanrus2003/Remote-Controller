@@ -11,26 +11,51 @@ export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
 
   useEffect(() => {
     const videoUrl = `${controllerUrl}/video`
+    let retryTimeout: ReturnType<typeof setInterval>
+    let isComponentMounted = true
     
     // Test connection to video endpoint
     const testConnection = async () => {
+      if (!isComponentMounted) return
+      
       try {
-        const response = await fetch(videoUrl, { method: 'HEAD' })
+        const response = await fetch(videoUrl, { method: 'HEAD', signal: AbortSignal.timeout(5000) })
         if (response.ok || response.status === 206) { // 206 is Partial Content (for streaming)
-          setIsConnected(true)
-          setError(null)
+          if (isComponentMounted) {
+            setIsConnected(true)
+            setError(null)
+          }
         } else {
-          setIsConnected(false)
-          setError('Video endpoint returned error')
+          if (isComponentMounted) {
+            setIsConnected(false)
+            setError('Video endpoint returned error')
+          }
         }
       } catch (err) {
         console.error('Video connection error:', err)
-        setIsConnected(false)
-        setError('Cannot connect to video stream')
+        if (isComponentMounted) {
+          setIsConnected(false)
+          setError('Cannot connect to video stream')
+        }
       }
     }
 
+    // Initial connection attempt
     testConnection()
+    
+    // Retry connection every 3 seconds if not connected
+    const startRetryInterval = () => {
+      retryTimeout = setInterval(() => {
+        testConnection()
+      }, 3000)
+    }
+    
+    startRetryInterval()
+
+    return () => {
+      isComponentMounted = false
+      clearInterval(retryTimeout)
+    }
   }, [controllerUrl])
 
   return (
@@ -69,7 +94,7 @@ export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
               {error || 'Video stream unavailable'}
             </div>
             <small className="placeholder-hint">
-              Ensure backend /video endpoint is running
+              Waiting for backend /video endpoint...
             </small>
           </div>
         )}

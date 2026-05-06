@@ -2,7 +2,6 @@ import { useState, useCallback, useEffect } from 'react'
 import axios from 'axios'
 import './App.css'
 import RobotControlPanel from './components/RobotControlPanel'
-import SensorVisualization from './components/SensorVisualization'
 import RobotPosition from './components/RobotPosition'
 import HealthDashboard from './components/HealthDashboard'
 
@@ -21,7 +20,12 @@ function App() {
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected'>('disconnected')
   const [healthStats, setHealthStats] = useState<HealthStats | null>(null)
   const [healthHistory, setHealthHistory] = useState<HealthStats[]>([])
+  const [resetTrigger, setResetTrigger] = useState<number>(0)
   const controllerUrl = 'http://192.168.1.132:5000'
+
+  const handleReset = useCallback(() => {
+    setResetTrigger((prev) => prev + 1)
+  }, [])
 
   const parseMetricNumber = (value: string): number | null => {
     const cleaned = value.trim().replace(/[%A-Za-z]+$/g, '')
@@ -170,13 +174,12 @@ function App() {
 
       <main className="app-main">
         <div className="control-section">
-          <RobotControlPanel />
+          <RobotControlPanel onReset={handleReset} />
         </div>
 
         <div className="visualization-grid">
           <HealthDashboard healthStats={healthStats} healthHistory={healthHistory} isConnected={connectionStatus === 'connected'} />
-          <SensorVisualization />
-          <RobotPosition />
+          <RobotPosition resetTrigger={resetTrigger} />
         </div>
       </main>
     </div>

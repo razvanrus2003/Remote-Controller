@@ -4,6 +4,8 @@ import './App.css'
 import RobotControlPanel from './components/RobotControlPanel'
 import RobotPosition from './components/RobotPosition'
 import HealthDashboard from './components/HealthDashboard'
+import PIDController from './components/PIDController'
+import { controllerUrl } from './config.ts'
 
 interface HealthStats {
   cpu_percent: number
@@ -21,7 +23,6 @@ function App() {
   const [healthStats, setHealthStats] = useState<HealthStats | null>(null)
   const [healthHistory, setHealthHistory] = useState<HealthStats[]>([])
   const [resetTrigger, setResetTrigger] = useState<number>(0)
-  const controllerUrl = 'http://192.168.1.132:5000'
 
   const handleReset = useCallback(() => {
     setResetTrigger((prev) => prev + 1)
@@ -162,6 +163,8 @@ function App() {
     }
   }, [connectionStatus, fetchHealthStats])
 
+  const RobotControlPanelAny = RobotControlPanel as any
+
   return (
     <div className="app">
       <header className="app-header">
@@ -174,12 +177,16 @@ function App() {
 
       <main className="app-main">
         <div className="control-section">
-          <RobotControlPanel onReset={handleReset} />
+          <RobotControlPanelAny onReset={handleReset} />
+        </div>
+
+        <div className="pid-section">
+          <PIDController />
         </div>
 
         <div className="visualization-grid">
-          <HealthDashboard healthStats={healthStats} healthHistory={healthHistory} isConnected={connectionStatus === 'connected'} />
           <RobotPosition resetTrigger={resetTrigger} />
+          <HealthDashboard healthStats={healthStats} healthHistory={healthHistory} isConnected={connectionStatus === 'connected'} />
         </div>
       </main>
     </div>

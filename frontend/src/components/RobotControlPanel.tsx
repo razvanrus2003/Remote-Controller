@@ -3,240 +3,379 @@ import axios from 'axios'
 import VideoFeed from './VideoFeed'
 import '../styles/RobotControlPanel.css'
 
-interface RobotControlPanelProps {
-  onReset?: () => void
+interface MotorCommand {
+  motor_id: number
+  power: number
 }
 
-export default function RobotControlPanel({ onReset }: RobotControlPanelProps) {
-  const [motorPower, setMotorPower] = useState<[number, number]>([0, 0])
-  const [targetRpm, setTargetRpm] = useState<[number | string, number | string]>([0, 0])
-  const [targetPosition, setTargetPosition] = useState<[number | string, number | string]>([0, 0])
-  const [targetAngle, setTargetAngle] = useState<number | string>(0)
+interface TargetValues {
+  speed_motor1: number
+  speed_motor2: number
+  position_x: number
+  position_y: number
+  heading: number
+}
 
-  const controllerUrl = 'http://192.168.1.132:5000'
+export default function RobotControlPanel({ onReset }: { onReset?: () => void } = {}) {
+  const [motors, setMotors] = useState<MotorCommand[]>([
+    { motor_id: 1, power: 0 },
+    { motor_id: 2, power: 0 },
+  ])
 
-  const clampMotorPower = (value: number) => Math.max(-1, Math.min(1, value))
+  const [targets, setTargets] = useState<TargetValues>({
+    speed_motor1: 0,
+    speed_motor2: 0,
+    position_x: 0,
+    position_y: 0,
+    heading: 0,
+  })
 
-  const handleMotorPowerChange = (index: 0 | 1, value: number) => {
-    setMotorPower((prev) => {
-      const next: [number, number] = [...prev] as [number, number]
-      next[index] = clampMotorPower(value)
-      return next
-    })
+  const [isLoading, setIsLoading] = useState(false)
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
+  const controllerUrl = 'http://localhost:5000'
+
+  const handleMotorChange = (motorId: number, newPower: number) => {
+    setMotors(motors.map(m => 
+      m.motor_id === motorId ? { ...m, power: Math.max(-100, Math.min(100, newPower)) } : m
+    ))
   }
 
-  const sendMotorPower = useCallback(async () => {
-    try {
-      const response = await axios.post(`${controllerUrl}/command/power`, motorPower)
-      console.log('Motor power sent:', response.data)
-    } catch (error) {
-      console.error('Failed to send motor power:', error)
-    }
-  }, [controllerUrl, motorPower])
-
-  const sendTargetRpm = useCallback(async () => {
-    try {
-      const rpmValues: [number, number] = [
-        typeof targetRpm[0] === 'string' ? (targetRpm[0] === '' ? 0 : Number(targetRpm[0])) : targetRpm[0],
-        typeof targetRpm[1] === 'string' ? (targetRpm[1] === '' ? 0 : Number(targetRpm[1])) : targetRpm[1],
-      ]
-      const response = await axios.post(`${controllerUrl}/command/rpm`, rpmValues)
-      console.log('Target RPM sent:', response.data)
-    } catch (error) {
-      console.error('Failed to send target RPM:', error)
-    }
-  }, [controllerUrl, targetRpm])
-
-  const sendTargetPosition = useCallback(async () => {
-    try {
-      const posValues: [number, number] = [
-        typeof targetPosition[0] === 'string' ? (targetPosition[0] === '' ? 0 : Number(targetPosition[0])) : targetPosition[0],
-        typeof targetPosition[1] === 'string' ? (targetPosition[1] === '' ? 0 : Number(targetPosition[1])) : targetPosition[1],
-      ]
-      const response = await axios.post(`${controllerUrl}/command/position`, posValues)
-      console.log('Target position sent:', response.data)
-    } catch (error) {
-      console.error('Failed to send target position:', error)
-    }
-  }, [controllerUrl, targetPosition])
-
-  const sendTargetAngle = useCallback(async () => {
-    try {
-      const angleValue = typeof targetAngle === 'string' ? (targetAngle === '' ? 0 : Number(targetAngle)) : targetAngle
-      const response = await axios.post(`${controllerUrl}/command/angle`, [angleValue])
-      console.log('Target angle sent:', response.data)
-    } catch (error) {
-      console.error('Failed to send target angle:', error)
-    }
-  }, [controllerUrl, targetAngle])
-
-  const resetMotorPower = () => {
-    setMotorPower([0, 0])
+  const handleTargetChange = (field: keyof TargetValues, value: string) => {
+    const numValue = value === '' ? 0 : parseFloat(value) || 0
+    setTargets((prev) => ({
+      ...prev,
+      [field]: numValue,
+    }))
   }
 
-  const sendReset = useCallback(async () => {
+  const handleTargetSubmit = async (targetType: keyof TargetValues) => {
+    setIsLoading(true)
+    setMessage(null)
+
     try {
-      const response = await axios.post(`${controllerUrl}/command/reset`)
-      console.log('Reset command sent:', response.data)
+      let endpoint = ''
+      let payload: any = null
+
+      if (targetType === 'speed_motor1' || targetType === 'speed_motor2') {
+        endpoint = '/command/rpm'
+        payload = [targets.speed_motor1, targets.speed_motor2]
+      } else if (targetType === 'position_x' || targetType === 'position_y') {
+        endpoint = '/command/position'
+        payload = [targets.position_x, targets.position_y]
+      } else if (targetType === 'heading') {
+        endpoint = '/command/angle'
+        payload = [targets.heading]
+      }
+
+      const response = await axios.post(
+        `${controllerUrl}${endpoint}`,
+        payload,
+        { headers: { 'Content-Type': 'application/json' } }
+      )
+
+      if (endpoint === '/command/rpm') {
+        const rpmTargets = {
+          rpm1: targets.speed_motor1,
+          rpm2: targets.speed_motor2,
+        }
+        localStorage.setItem('rpmTargets', JSON.stringify(rpmTargets))
+        window.dispatchEvent(new CustomEvent('rpmTargetsUpdated', { detail: rpmTargets }))
+      }
+
+      setMessage({
+        type: 'success',
+        text: `${targetType} set successfully`,
+      })
+      console.log('[RobotControlPanel] Target Response:', response.data)
+    } catch (error) {
+      console.error('[RobotControlPanel] Failed to set target:', error)
+      setMessage({
+        type: 'error',
+        text: `Failed to set target: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const sendMotorCommand = useCallback(async () => {
+    setIsLoading(true)
+    setMessage(null)
+
+    try {
+      // Normalize motor powers from -100..100 to -1.0..1.0
+      const normalizedPowers = motors.map(m => m.power / 100)
+      const response = await axios.post(
+        `${controllerUrl}/command/power`,
+        normalizedPowers,
+        { headers: { 'Content-Type': 'application/json' } }
+      )
+      
+      setMessage({
+        type: 'success',
+        text: 'Motor command sent',
+      })
+      console.log('[RobotControlPanel] Command sent:', response.data)
+    } catch (error) {
+      console.error('[RobotControlPanel] Failed to send command:', error)
+      setMessage({
+        type: 'error',
+        text: `Failed to send command: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      })
+    } finally {
+      setIsLoading(false)
+    }
+  }, [motors])
+
+  const resetAllMotors = () => {
+    setMotors(motors.map(m => ({ ...m, power: 0 })))
+  }
+
+  const setMaxPower = () => {
+    setMotors(motors.map(m => ({ ...m, power: 100 })))
+  }
+
+  const resetAllTargets = async () => {
+    setIsLoading(true)
+    setMessage(null)
+
+    try {
+      const response = await axios.post(
+        `${controllerUrl}/command/reset`,
+        {},
+        { headers: { 'Content-Type': 'application/json' } }
+      )
+
+      setTargets({
+        speed_motor1: 0,
+        speed_motor2: 0,
+        position_x: 0,
+        position_y: 0,
+        heading: 0,
+      })
+
+      localStorage.removeItem('rpmTargets')
+      window.dispatchEvent(new CustomEvent('rpmTargetsUpdated', { detail: null }))
+
+      setMessage({
+        type: 'success',
+        text: 'All targets reset',
+      })
+      console.log('[RobotControlPanel] Reset Response:', response.data)
+      
+      // Trigger graph reset
       onReset?.()
     } catch (error) {
-      console.error('Failed to send reset command:', error)
+      console.error('[RobotControlPanel] Failed to reset targets:', error)
+      setMessage({
+        type: 'error',
+        text: `Failed to reset: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      })
+    } finally {
+      setIsLoading(false)
     }
-  }, [controllerUrl, onReset])
-
-  const setMaxMotorPower = () => {
-    setMotorPower([1, 1])
   }
 
   return (
     <div className="control-panel-simple">
       <div className="panel-header">
-        <h2>Control Commands</h2>
+        <h2>Motor Control</h2>
       </div>
 
-      <div className="endpoint-grid">
-        <section className="endpoint-card">
-          <h3>Motor Power</h3>
-          <p className="endpoint-note">POST /command/power with [motorA, motorB] in range [-1.0, 1.0]</p>
-          <div className="motors-grid">
-            {[0, 1].map((index) => (
-              <div key={index} className="motor-control">
-                <h4>Motor {index + 1}</h4>
-                <div className="power-display">
-                  <span className={`power-value ${motorPower[index] > 0 ? 'forward' : motorPower[index] < 0 ? 'backward' : ''}`}>
-                    {motorPower[index].toFixed(2)}
-                  </span>
-                </div>
+      <div className="motors-grid">
+        {motors.map((motor) => (
+          <div key={motor.motor_id} className="motor-control">
+            <h3>Motor {motor.motor_id}</h3>
             
-                <input
-                  type="range"
-                  min="-1"
-                  max="1"
-                  step="0.01"
-                  value={motorPower[index]}
-                  onChange={(e) => handleMotorPowerChange(index as 0 | 1, Number(e.target.value))}
-                  className="slider"
-                />
+            <div className="power-display">
+              <span className={`power-value ${motor.power > 0 ? 'forward' : motor.power < 0 ? 'backward' : ''}`}>
+                {motor.power}%
+              </span>
+            </div>
 
-                <div className="motor-buttons">
-                  <button
-                    onClick={() => handleMotorPowerChange(index as 0 | 1, 0)}
-                    className="btn btn-small btn-neutral"
-                  >
-                    Stop
-                  </button>
-                  <button
-                    onClick={() => handleMotorPowerChange(index as 0 | 1, 0.5)}
-                    className="btn btn-small btn-primary"
-                  >
-                    Half
-                  </button>
-                  <button
-                    onClick={() => handleMotorPowerChange(index as 0 | 1, 1)}
-                    className="btn btn-small btn-success"
-                  >
-                    Max
-                  </button>
-                </div>
-              </div>
-            ))}
+            <input
+              type="range"
+              min="-100"
+              max="100"
+              value={motor.power}
+              onChange={(e) => handleMotorChange(motor.motor_id, Number(e.target.value))}
+              className="slider"
+              style={{
+                background: motor.power > 0 
+                  ? `linear-gradient(to right, #e0e0e0 0%, #4CAF50 ${motor.power}%, #e0e0e0 ${motor.power}%, #e0e0e0 100%)`
+                  : motor.power < 0
+                  ? `linear-gradient(to right, #e0e0e0 0%, #e0e0e0 ${100 + motor.power}%, #FF6B6B ${100 + motor.power}%, #e0e0e0 100%)`
+                  : '#e0e0e0'
+              }}
+            />
+
+            <div className="motor-buttons">
+              <button 
+                onClick={() => handleMotorChange(motor.motor_id, 0)}
+                className="btn btn-small btn-neutral"
+              >
+                Stop
+              </button>
+              <button 
+                onClick={() => handleMotorChange(motor.motor_id, 50)}
+                className="btn btn-small btn-primary"
+              >
+                Half
+              </button>
+              <button 
+                onClick={() => handleMotorChange(motor.motor_id, 100)}
+                className="btn btn-small btn-success"
+              >
+                Max
+              </button>
+            </div>
           </div>
+        ))}
+      </div>
 
-          <div className="control-actions">
-            <button onClick={resetMotorPower} className="btn btn-danger">
-              Reset All
+      <div className="control-actions">
+        <button onClick={resetAllMotors} className="btn btn-danger">
+          Reset All
+        </button>
+        <button onClick={setMaxPower} className="btn btn-success">
+          Max All
+        </button>
+        <button onClick={sendMotorCommand} className="btn btn-primary btn-send">
+          Send Command
+        </button>
+      </div>
+
+      {/* Status Message */}
+      {message && (
+        <div className={`status-message ${message.type}`}>
+          {message.type === 'success' ? '✓' : '✕'} {message.text}
+        </div>
+      )}
+
+      {/* Target Values Section */}
+      <div className="target-values-section">
+        <h3>Target Values</h3>
+        
+        <div className="target-controls">
+          <div className="target-control">
+            <div className="target-input-group">
+              <label htmlFor="target-speed-m1">Target Speed Motor 1 (mm/s)</label>
+              <input
+                id="target-speed-m1"
+                type="number"
+                step="0.1"
+                value={targets.speed_motor1 || ''}
+                onChange={(e) => handleTargetChange('speed_motor1', e.target.value)}
+                disabled={isLoading}
+                placeholder="0"
+              />
+            </div>
+            <button 
+              className="btn btn-target" 
+              onClick={() => handleTargetSubmit('speed_motor1')} 
+              disabled={isLoading}
+            >
+              Send
             </button>
-            <button onClick={setMaxMotorPower} className="btn btn-success">
-              Max All
+          </div>
+
+          <div className="target-control">
+            <div className="target-input-group">
+              <label htmlFor="target-speed-m2">Target Speed Motor 2 (mm/s)</label>
+              <input
+                id="target-speed-m2"
+                type="number"
+                step="0.1"
+                value={targets.speed_motor2 || ''}
+                onChange={(e) => handleTargetChange('speed_motor2', e.target.value)}
+                disabled={isLoading}
+                placeholder="0"
+              />
+            </div>
+            <button 
+              className="btn btn-target" 
+              onClick={() => handleTargetSubmit('speed_motor2')} 
+              disabled={isLoading}
+            >
+              Send
             </button>
-            <button onClick={sendMotorPower} className="btn btn-primary btn-send">
-              Send /command/power
+          </div>
+
+          <div className="target-control">
+            <div className="target-input-group">
+              <label htmlFor="target-pos-x">Target Position X (mm)</label>
+              <input
+                id="target-pos-x"
+                type="number"
+                step="1"
+                value={targets.position_x || ''}
+                onChange={(e) => handleTargetChange('position_x', e.target.value)}
+                disabled={isLoading}
+                placeholder="0"
+              />
+            </div>
+            <button 
+              className="btn btn-target" 
+              onClick={() => handleTargetSubmit('position_x')} 
+              disabled={isLoading}
+            >
+              Send
             </button>
           </div>
-        </section>
 
-        <section className="endpoint-card compact">
-          <h3>Target RPM</h3>
-          <p className="endpoint-note">POST /command/rpm with [rpm1, rpm2]</p>
-          <div className="inline-inputs two-cols">
-            <label>
-              RPM 1
+          <div className="target-control">
+            <div className="target-input-group">
+              <label htmlFor="target-pos-y">Target Position Y (mm)</label>
               <input
+                id="target-pos-y"
                 type="number"
-                value={targetRpm[0]}
-                onChange={(e) => setTargetRpm([e.target.value, targetRpm[1]])}
-                className="number-input"
+                step="1"
+                value={targets.position_y || ''}
+                onChange={(e) => handleTargetChange('position_y', e.target.value)}
+                disabled={isLoading}
+                placeholder="0"
               />
-            </label>
-            <label>
-              RPM 2
-              <input
-                type="number"
-                value={targetRpm[1]}
-                onChange={(e) => setTargetRpm([targetRpm[0], e.target.value])}
-                className="number-input"
-              />
-            </label>
+            </div>
+            <button 
+              className="btn btn-target" 
+              onClick={() => handleTargetSubmit('position_y')} 
+              disabled={isLoading}
+            >
+              Send
+            </button>
           </div>
-          <button onClick={sendTargetRpm} className="btn btn-primary">
-            Send /command/rpm
-          </button>
-        </section>
 
-        <section className="endpoint-card compact">
-          <h3>Target Position</h3>
-          <p className="endpoint-note">POST /command/position with [x, y] in mm</p>
-          <div className="inline-inputs two-cols">
-            <label>
-              X (mm)
+          <div className="target-control">
+            <div className="target-input-group">
+              <label htmlFor="target-heading">Target Heading (deg)</label>
               <input
+                id="target-heading"
                 type="number"
-                value={targetPosition[0]}
-                onChange={(e) => setTargetPosition([e.target.value, targetPosition[1]])}
-                className="number-input"
+                step="0.1"
+                value={targets.heading || ''}
+                onChange={(e) => handleTargetChange('heading', e.target.value)}
+                disabled={isLoading}
+                placeholder="0"
               />
-            </label>
-            <label>
-              Y (mm)
-              <input
-                type="number"
-                value={targetPosition[1]}
-                onChange={(e) => setTargetPosition([targetPosition[0], e.target.value])}
-                className="number-input"
-              />
-            </label>
+            </div>
+            <button 
+              className="btn btn-target" 
+              onClick={() => handleTargetSubmit('heading')} 
+              disabled={isLoading}
+            >
+              Send
+            </button>
           </div>
-          <button onClick={sendTargetPosition} className="btn btn-primary">
-            Send /command/position
-          </button>
-        </section>
+        </div>
 
-        <section className="endpoint-card compact">
-          <h3>Target Angle</h3>
-          <p className="endpoint-note">POST /command/angle with [theta] in degrees</p>
-          <div className="inline-inputs">
-            <label>
-              Theta (deg)
-              <input
-                type="number"
-                value={targetAngle}
-                onChange={(e) => setTargetAngle(e.target.value)}
-                className="number-input"
-              />
-            </label>
-          </div>
-          <button onClick={sendTargetAngle} className="btn btn-primary">
-            Send /command/angle
-          </button>
-        </section>
-
-        <section className="endpoint-card compact">
-          <h3>Reset</h3>
-          <p className="endpoint-note">POST /command/reset</p>
-          <button onClick={sendReset} className="btn btn-danger">
-            Send /command/reset
-          </button>
-        </section>
+        <button 
+          className="btn btn-target-reset" 
+          onClick={resetAllTargets} 
+          disabled={isLoading}
+        >
+          Reset
+        </button>
       </div>
 
       <VideoFeed controllerUrl={controllerUrl} />

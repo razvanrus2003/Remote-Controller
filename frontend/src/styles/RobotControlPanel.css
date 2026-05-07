@@ -525,6 +525,203 @@
   font-size: 1.1rem;
 }
 
+.motor-control-with-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  background-color: var(--bg-secondary);
+  border: 2px solid var(--border-color);
+  border-radius: 8px;
+  padding: 1.5rem;
+  transition: all 0.2s;
+}
+
+.motor-control-with-graph:hover {
+  border-color: var(--primary-color);
+  box-shadow: 0 4px 12px rgba(33, 150, 243, 0.15);
+}
+
+.motor-control-with-graph .motor-control {
+  background-color: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.motor-control-with-graph .motor-control:hover {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.rpm-graph-container {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.rpm-graph-container h4 {
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.recharts-wrapper {
+  width: 100%;
+  height: 100%;
+}
+
+.target-values-section {
+  background: linear-gradient(135deg, #E8F5E9 0%, #F1F8E9 100%);
+  border: 2px solid var(--success-color);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-top: 1.5rem;
+}
+
+.target-values-section h3 {
+  margin: 0 0 1rem 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--success-color);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.target-controls {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.target-control {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.target-input-group {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.target-input-group label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-primary);
+}
+
+.target-input-group input {
+  padding: 8px 10px;
+  border: 2px solid var(--success-color);
+  border-radius: 6px;
+  background: white;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  font-weight: 500;
+  transition: border-color 0.2s ease;
+}
+
+.target-input-group input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
+}
+
+.target-input-group input:disabled {
+  background: rgba(76, 175, 80, 0.1);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.btn-target {
+  background: var(--success-color);
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border-radius: 6px;
+  white-space: nowrap;
+  min-width: 60px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-target:hover:not(:disabled) {
+  background: #45a049;
+  transform: translateY(-2px);
+  box-shadow: 0 2px 8px rgba(76, 175, 80, 0.2);
+}
+
+.btn-target:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-target:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-target-reset {
+  background: #FF9800;
+  color: white;
+  border: none;
+  padding: 10px 16px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  width: 100%;
+  margin-top: 12px;
+}
+
+.btn-target-reset:hover:not(:disabled) {
+  background: #F57C00;
+  transform: translateY(-2px);
+  box-shadow: 0 2px 8px rgba(255, 152, 0, 0.2);
+}
+
+.btn-target-reset:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-target-reset:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.status-message {
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-top: 12px;
+  font-weight: 500;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-message.success {
+  background: rgba(76, 175, 80, 0.15);
+  border: 1px solid rgba(76, 175, 80, 0.5);
+  color: var(--success-color);
+}
+
+.status-message.error {
+  background: rgba(244, 67, 54, 0.15);
+  border: 1px solid rgba(244, 67, 54, 0.5);
+  color: var(--danger-color);
+}
+
 @media (max-width: 768px) {
   .control-panel {
     padding: 1.5rem;
@@ -549,7 +746,24 @@
   }
 
   .motors-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: 1fr;
+  }
+
+  .target-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .target-control {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .btn-target {
+    width: 100%;
+  }
+
+  .motor-control-with-graph {
+    width: 100%;
   }
 
   .inline-inputs.two-cols {

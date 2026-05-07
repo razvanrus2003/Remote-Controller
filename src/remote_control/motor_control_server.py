@@ -320,6 +320,91 @@ def create_app(motor_publisher):
             logger.error(f'Error processing angle command: {e}')
             return jsonify({'error': str(e)}), 500
 
+    @app.route('/command/pid', methods=['POST'])
+    def receive_pid_command():
+        """Receive PID gain update command
+
+        Supported formats:
+        - JSON array: [ctrl, kp, ki, kd]
+        - JSON object: {"ctrl":"S","kp":...,"ki":...,"kd":...}
+
+        `ctrl` must be one of 'S','P','H','A' (case-insensitive)
+        """
+        try:
+            data = request.get_json()
+
+            if isinstance(data, list):
+                if len(data) != 4:
+                    return jsonify({'error': 'Expected array of [ctrl, kp, ki, kd]'}), 400
+                ctrl = str(data[0]).upper()
+                kp, ki, kd = data[1], data[2], data[3]
+
+            elif isinstance(data, dict):
+                ctrl = str(data.get('ctrl', '')).upper()
+                try:
+                    kp = float(data.get('kp'))
+                    ki = float(data.get('ki'))
+                    kd = float(data.get('kd'))
+                except Exception:
+                    return jsonify({'error': 'kp/ki/kd must be numeric'}), 400
+
+            else:
+                return jsonify({'error': 'Expected JSON array or object'}), 400
+
+            if ctrl not in ['S', 'P', 'H', 'A']:
+                return jsonify({'error': "ctrl must be one of 'S','P','H','A'"}), 400
+
+            kp = float(kp); ki = float(ki); kd = float(kd)
+            command_text = f'V,{ctrl},{kp:g},{ki:g},{kd:g}'
+            success = motor_publisher.publish_command(command_text)
+
+            if success:
+                return jsonify({'status': 'success', 'command': command_text}), 200
+            return jsonify({'error': 'Failed to publish PID command'}), 500
+
+        except Exception as e:
+            logger.error(f'Error processing PID command: {e}')
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/command/pid/<ctrl>', methods=['POST'])
+    def receive_pid_for_ctrl(ctrl):
+        """Receive PID update for a specific controller (path param)
+
+        Example: POST /command/pid/S with body [kp,ki,kd] or {"kp":...,"ki":...,"kd":...}
+        """
+        try:
+            ctrl = str(ctrl).upper()
+            if ctrl not in ['S', 'P', 'H', 'A']:
+                return jsonify({'error': "ctrl must be one of 'S','P','H','A'"}), 400
+
+            data = request.get_json()
+            if isinstance(data, list):
+                if len(data) != 3:
+                    return jsonify({'error': 'Expected array of [kp, ki, kd]'}), 400
+                kp, ki, kd = data[0], data[1], data[2]
+
+            elif isinstance(data, dict):
+                try:
+                    kp = float(data.get('kp'))
+                    ki = float(data.get('ki'))
+                    kd = float(data.get('kd'))
+                except Exception:
+                    return jsonify({'error': 'kp/ki/kd must be numeric'}), 400
+            else:
+                return jsonify({'error': 'Expected JSON array or object'}), 400
+
+            kp = float(kp); ki = float(ki); kd = float(kd)
+            command_text = f'V,{ctrl},{kp:g},{ki:g},{kd:g}'
+            success = motor_publisher.publish_command(command_text)
+
+            if success:
+                return jsonify({'status': 'success', 'command': command_text}), 200
+            return jsonify({'error': 'Failed to publish PID command'}), 500
+
+        except Exception as e:
+            logger.error(f'Error processing PID command for {ctrl}: {e}')
+            return jsonify({'error': str(e)}), 500
+
     @app.route('/command/reset', methods=['POST'])
     def receive_reset_command():
         """Receive reset command"""

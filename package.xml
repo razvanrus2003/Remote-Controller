@@ -8,10 +8,15 @@
   <buildtool_depend>ament_python</buildtool_depend>
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <exec_depend>ament_index_python</exec_depend>
   <exec_depend>python3-pygame</exec_depend>
   <exec_depend>python3-flask</exec_depend>
   <exec_depend>python3-flask-cors</exec_depend>
   <exec_depend>python3-psutil</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <!-- onnxruntime may be installed via pip: pip install onnxruntime -->
+  <exec_depend>python3-pil</exec_depend>
   <export>
     <build_type>ament_python</build_type>
   </export>

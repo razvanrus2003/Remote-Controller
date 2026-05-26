@@ -5,47 +5,85 @@ interface VideoFeedProps {
   controllerUrl: string
 }
 
+interface ObstacleStatus {
+  status: 'unknown' | 'clear' | 'blocked'
+  blocked: boolean
+  confidence: number
+  reason: string
+  updated_at: number | null
+  frame_age_sec: number | null
+  stale: boolean
+}
+
 export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
   const [isConnected, setIsConnected] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [isDepthMapConnected, setIsDepthMapConnected] = useState(false)
+  const [depthMapError, setDepthMapError] = useState<string | null>(null)
+  const [obstacleStatus, setObstacleStatus] = useState<ObstacleStatus | null>(null)
 
   useEffect(() => {
-    const videoUrl = `${controllerUrl}/video`
-    
-    // Test connection to video endpoint
-    const testConnection = async () => {
+    let isMounted = true
+
+    const fetchObstacleStatus = async () => {
       try {
-        const response = await fetch(videoUrl, { method: 'HEAD' })
-        if (response.ok || response.status === 206) { // 206 is Partial Content (for streaming)
-          setIsConnected(true)
-          setError(null)
-        } else {
-          setIsConnected(false)
-          setError('Video endpoint returned error')
+        const response = await fetch(`${controllerUrl}/obstacle`)
+        const data = (await response.json()) as ObstacleStatus
+
+        if (!isMounted) {
+          return
+        }
+
+        if (data && typeof data.status === 'string') {
+          setObstacleStatus(data)
         }
       } catch (err) {
-        console.error('Video connection error:', err)
-        setIsConnected(false)
-        setError('Cannot connect to video stream')
+        console.error('Obstacle status error:', err)
+        if (isMounted) {
+          setObstacleStatus(null)
+        }
       }
     }
 
-    testConnection()
+    void fetchObstacleStatus()
+    const interval = window.setInterval(() => {
+      void fetchObstacleStatus()
+    }, 750)
+
+    return () => {
+      isMounted = false
+      window.clearInterval(interval)
+    }
   }, [controllerUrl])
+
+  const obstacleBadgeClass = obstacleStatus?.blocked
+    ? 'blocked'
+    : obstacleStatus?.status === 'clear'
+      ? 'clear'
+      : 'unknown'
 
   return (
     <div className="video-feed-section">
-      <div className="video-header">
-        <h3>Video Feed</h3>
-        <div className={`video-status ${isConnected ? 'connected' : 'disconnected'}`}>
-          {isConnected ? '🟢 Streaming' : '🔴 Offline'}
-        </div>
-      </div>
+      <div className="streams-layout">
+        <div className="video-column">
+          <div className="video-header">
+            <h3>Video Feed</h3>
+            <div className="video-header-statuses">
+              <div className={`video-status ${isConnected ? 'connected' : 'disconnected'}`}>
+                {isConnected ? '🟢 Streaming' : '🔴 Offline'}
+              </div>
+              <div className={`obstacle-status ${obstacleBadgeClass}`}>
+                {obstacleStatus?.blocked
+                  ? `⚠️ Blocked (${Math.round(obstacleStatus.confidence * 100)}%)`
+                  : obstacleStatus?.status === 'clear'
+                    ? `✅ Clear (${Math.round(obstacleStatus.confidence * 100)}%)`
+                    : '⏳ Obstacle check unavailable'}
+              </div>
+            </div>
+          </div>
 
-      <div className="video-container">
-        {isConnected ? (
-          <>
-            <img 
+          <div className="video-container">
+            <img
               src={`${controllerUrl}/video`}
               alt="Robot Video Feed"
               className="video-stream"
@@ -58,80 +96,74 @@ export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
                 setError(null)
               }}
             />
-            <div className="video-info">
-              <small>MJPEG Stream • 1280×720 • Real-time video from robot camera</small>
-            </div>
-          </>
-        ) : (
-          <div className="video-placeholder">
-            <div className="placeholder-icon">📷</div>
-            <div className="placeholder-text">
-              {error || 'Video stream unavailable'}
-            </div>
-            <small className="placeholder-hint">
-              Ensure backend /video endpoint is running
-            </small>
+            {!isConnected && (
+              <div className="video-placeholder">
+                <div className="placeholder-icon">📷</div>
+                <div className="placeholder-text">
+                  {error || 'Video stream connecting...'}
+                </div>
+                <small className="placeholder-hint">
+                  Ensure the external camera publisher is running on <code>/camera/image/compressed</code>
+                </small>
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      <div className="video-requirements">
-        <details>
-          <summary>Backend Requirements</summary>
-          <div className="requirements-content">
-            <h4>Endpoint: GET /video</h4>
-            <p><strong>Content-Type:</strong> multipart/x-mixed-replace; boundary=frame</p>
-            <p><strong>Purpose:</strong> Stream MJPEG (Motion JPEG) video frames continuously</p>
-            
-            <h4>Response Format:</h4>
-            <pre>{`--frame
-Content-Type: image/jpeg
-Content-Length: {size}
-
-{jpeg_image_bytes}
---frame
-Content-Type: image/jpeg
-Content-Length: {size}
-
-{jpeg_image_bytes}
-...`}</pre>
-
-            <h4>Implementation Example (Python/Flask):</h4>
-            <pre>{`@app.route('/video')
-def video_feed():
-    def generate():
-        camera = Camera()  # Your camera object
-        while True:
-            frame = camera.get_frame()
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame_bytes = buffer.tobytes()
-            yield (b'--frame\\r\\n'
-                   b'Content-Type: image/jpeg\\r\\n'
-                   b'Content-Length: ' + str(len(frame_bytes)).encode() + b'\\r\\n\\r\\n'
-                   + frame_bytes + b'\\r\\n')
-    
-    return Response(generate(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')`}</pre>
-
-            <h4>Key Requirements:</h4>
-            <ul>
-              <li>Endpoint must be at <code>/video</code></li>
-              <li>Return MJPEG stream (multipart/x-mixed-replace)</li>
-              <li>Each frame must be a valid JPEG image</li>
-              <li>Use boundary separator <code>--frame</code></li>
-              <li>Include Content-Type and Content-Length headers for each frame</li>
-              <li>Continuous streaming (connection stays open)</li>
-              <li>Typical frame rate: 15-30 FPS (configurable)</li>
-              <li>Image resolution: 640x480 or 1280x720 recommended</li>
-            </ul>
-
-            <h4>CORS Configuration (if needed):</h4>
-            <p>Add CORS headers to allow cross-origin requests:</p>
-            <pre>{`'Access-Control-Allow-Origin': '*'
-'Access-Control-Allow-Methods': 'GET, OPTIONS'
-'Access-Control-Allow-Headers': 'Content-Type'`}</pre>
+          <div className="video-info">
+            <small>MJPEG Stream • 1280×720 • Real-time video from robot camera</small>
           </div>
-        </details>
+
+          <div className={`obstacle-banner ${obstacleStatus?.blocked ? 'blocked' : obstacleStatus?.status === 'clear' ? 'clear' : 'unknown'}`}>
+            <strong>
+              {obstacleStatus?.blocked ? 'Obstacle detected' : obstacleStatus?.status === 'clear' ? 'Path clear' : 'Obstacle status unavailable'}
+            </strong>
+            <span>
+              {obstacleStatus
+                ? `${obstacleStatus.reason} ${obstacleStatus.frame_age_sec !== null ? `• frame age ${obstacleStatus.frame_age_sec}s` : ''}`
+                : 'Waiting for the backend obstacle detector to report a status.'}
+            </span>
+          </div>
+        </div>
+
+        <div className="depth-map-section">
+          <div className="depth-map-header">
+            <h4>Depth Video Feed</h4>
+            <div className={`depth-map-status ${isDepthMapConnected ? 'connected' : 'disconnected'}`}>
+              {isDepthMapConnected ? '🟢 Streaming' : '🔴 Connecting'}
+            </div>
+          </div>
+
+          <div className="depth-map-container">
+            <img
+              src={`${controllerUrl}/depth-map`}
+              alt="Robot Depth Video Feed"
+              className="depth-map-stream"
+              onError={() => {
+                setIsDepthMapConnected(false)
+                setDepthMapError('Failed to load depth stream')
+              }}
+              onLoad={() => {
+                setIsDepthMapConnected(true)
+                setDepthMapError(null)
+              }}
+            />
+            {!isDepthMapConnected && (
+              <div className="depth-map-placeholder">
+                <div className="placeholder-icon">🗺️</div>
+                <div className="placeholder-text">
+                  {depthMapError || 'Depth video unavailable'}
+                </div>
+                <small className="placeholder-hint">
+                  Ensure backend <code>/depth-map</code> stream is running
+                </small>
+              </div>
+            )}
+          </div>
+
+          <div className="depth-map-info">
+            <small>Live depth stream • /depth-map • Matching dimensions to the video feed</small>
+          </div>
+        </div>
       </div>
     </div>
   )

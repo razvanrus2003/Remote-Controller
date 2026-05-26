@@ -9,16 +9,19 @@ interface PositionTelemetry {
   robot_x: number
   robot_y: number
   robot_ang: number
-  robot_ang_spd: number
-  robot_lin_spd: number
   target_x: number
   target_y: number
   target_ang: number
-  target_lin_spd: number
+  target_ppm1: number
+  target_ppm2: number
   enc_c1: number
   enc_c2: number
-  rpm1: number
-  rpm2: number
+  e1clk: number
+  e1dt: number
+  e2clk: number
+  e2dt: number
+  ppm1: number
+  ppm2: number
 }
 
 interface HistoryPoint {
@@ -32,164 +35,185 @@ const EMPTY_TELEMETRY: PositionTelemetry = {
   robot_x: 0,
   robot_y: 0,
   robot_ang: 0,
-  robot_ang_spd: 0,
-  robot_lin_spd: 0,
   target_x: 0,
   target_y: 0,
   target_ang: 0,
-  target_lin_spd: 0,
+  target_ppm1: 0,
+  target_ppm2: 0,
   enc_c1: 0,
   enc_c2: 0,
-  rpm1: 0,
-  rpm2: 0,
+  e1clk: 0,
+  e1dt: 0,
+  e2clk: 0,
+  e2dt: 0,
+  ppm1: 0,
+  ppm2: 0,
 }
 
 export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: number }) {
   const [telemetry, setTelemetry] = useState<PositionTelemetry>(EMPTY_TELEMETRY)
   const [history, setHistory] = useState<HistoryPoint[]>([])
   
-  const [rpmHistory, setRpmHistory] = useState<Array<{ time: number; rpm1: number; rpm2: number }>>([])
-  const [speedHistory, setSpeedHistory] = useState<Array<{ time: number; speed: number }>>([])
-  const [rpmTargets, setRpmTargets] = useState<{ rpm1: number | null; rpm2: number | null }>({
-    rpm1: null,
-    rpm2: null,
+  const [ppmHistory, setPpmHistory] = useState<Array<{ time: number; ppm1: number; ppm2: number }>>([])
+  const [pinsHistory, setPinsHistory] = useState<Array<{ time: number; e1CLK: number; e1DT: number; e2CLK: number; e2DT: number }>>([])
+  const [ppmTargets, setPpmTargets] = useState<{ ppm1: number | null; ppm2: number | null }>({
+    ppm1: null,
+    ppm2: null,
   })
   const [isConnected, setIsConnected] = useState(false)
-  const [lastRpmCommandTimestamp, setLastRpmCommandTimestamp] = useState<number | null>(null)
+  const [lastPpmCommandTimestamp, setLastPpmCommandTimestamp] = useState<number | null>(null)
   const [isResetView, setIsResetView] = useState(false)
 
+  const normalizeTimestamp = (timestamp: number | undefined) => {
+    if (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp <= 0) {
+      return 0
+    }
+
+    const absoluteTimestamp = Math.abs(timestamp)
+
+    // Support microseconds, milliseconds, and seconds.
+    if (absoluteTimestamp >= 1e15) {
+      return Math.round(timestamp / 1000)
+    }
+
+    if (absoluteTimestamp >= 1e12) {
+      return Math.round(timestamp)
+    }
+
+    return Math.round(timestamp * 1000)
+  }
+
+  const parseMaybeNumber = (value: unknown) => {
+    if (typeof value === 'number') return value
+    if (typeof value === 'string') {
+      const num = Number(value)
+      return Number.isNaN(num) ? null : num
+    }
+    return null
+  }
+
+  const parseStringSection = (payload: string, pattern: RegExp) => {
+    const match = payload.match(pattern)
+    if (!match) return null
+
+    const values = match.slice(1).map((value) => Number(value))
+    return values.every((value) => Number.isFinite(value)) ? values : null
+  }
+
   const parsePositionString = (payload: string): PositionTelemetry | null => {
-    const parts = payload.split(',').map((part) => part.trim())
-    const parsed: Partial<PositionTelemetry> = {}
+    const parsed: Record<string, unknown> = {}
 
-    for (const part of parts) {
-      const [key, value] = part.split('=').map((item) => item.trim())
-      if (!key || value === undefined) {
-        continue
-      }
-
-      const numericValue = Number(value)
-      if (Number.isNaN(numericValue)) {
-        continue
-      }
-
-      if (
-        key === 'timestamp' ||
-        key === 'robot_x' ||
-        key === 'robot_y' ||
-        key === 'robot_ang' ||
-        key === 'robot_ang_spd' ||
-        key === 'robot_lin_spd' ||
-        key === 'target_x' ||
-        key === 'target_y' ||
-        key === 'target_ang' ||
-        key === 'target_lin_spd' ||
-        key === 'enc_c1' ||
-        key === 'enc_c2' ||
-        key === 'rpm1' ||
-        key === 'rpm2'
-      ) {
-        parsed[key] = numericValue
+    // Accept flat `key=value` telemetry with commas, pipes, or spaces between pairs.
+    const keyValueRegex = /([a-zA-Z0-9_]+)=([^\s,|]+)/g
+    let match: RegExpExecArray | null
+    while ((match = keyValueRegex.exec(payload)) !== null) {
+      const key = match[1]
+      const value = parseMaybeNumber(match[2])
+      if (value !== null) {
+        parsed[key] = value
       }
     }
 
-    // rpm1/rpm2 are optional in the string payload; default to 0 when missing
-    if (
-      parsed.timestamp === undefined ||
-      parsed.robot_x === undefined ||
-      parsed.robot_y === undefined ||
-      parsed.robot_ang === undefined ||
-      parsed.robot_ang_spd === undefined ||
-      parsed.robot_lin_spd === undefined ||
-      parsed.target_x === undefined ||
-      parsed.target_y === undefined ||
-      parsed.target_ang === undefined ||
-      parsed.target_lin_spd === undefined ||
-      parsed.enc_c1 === undefined ||
-      parsed.enc_c2 === undefined
-    ) {
-      return null
+    // Support the older sectioned format as a fallback.
+    if (Object.keys(parsed).length === 0) {
+      const robot = parseStringSection(payload, /ROBOT\s+x=([^\s|]+)\s+y=([^\s|]+)\s+ang=([^\s|]+)/i)
+      const target = parseStringSection(payload, /TARGET\s+x=([^\s|]+)\s+y=([^\s|]+)\s+ang=([^\s|]+)\s+ppm1=([^\s|]+)\s+ppm2=([^\s|]+)/i)
+      const enc = parseStringSection(payload, /ENC\s+c1=([^\s|]+)\s+c2=([^\s|]+)/i)
+      const pins = parseStringSection(payload, /PINS\s+e1clk=([^\s|]+)\s+e1dt=([^\s|]+)\s+e2clk=([^\s|]+)\s+e2dt=([^\s|]+)/i)
+      const ppm = parseStringSection(payload, /RPM\s+m1=([^\s|]+)\s+m2=([^\s|]+)/i)
+
+      if (!robot || !target || !enc || !pins || !ppm) {
+        return null
+      }
+
+      parsed.robot_x = robot[0]
+      parsed.robot_y = robot[1]
+      parsed.robot_ang = robot[2]
+      parsed.target_x = target[0]
+      parsed.target_y = target[1]
+      parsed.target_ang = target[2]
+      parsed.target_ppm1 = target[3]
+      parsed.target_ppm2 = target[4]
+      parsed.enc_c1 = enc[0]
+      parsed.enc_c2 = enc[1]
+      parsed.e1clk = pins[0]
+      parsed.e1dt = pins[1]
+      parsed.e2clk = pins[2]
+      parsed.e2dt = pins[3]
+      parsed.ppm1 = ppm[0]
+      parsed.ppm2 = ppm[1]
     }
 
-    // ensure rpm keys exist
-    parsed.rpm1 = parsed.rpm1 === undefined ? 0 : parsed.rpm1
-    parsed.rpm2 = parsed.rpm2 === undefined ? 0 : parsed.rpm2
-
-    return parsed as PositionTelemetry
+    return parsePositionObject(parsed)
   }
 
   const parsePositionObject = (payload: Record<string, unknown>): PositionTelemetry | null => {
     const result: Partial<PositionTelemetry> = {}
 
-    const requiredKeys: Array<keyof PositionTelemetry> = [
-      'timestamp',
-      'robot_x',
-      'robot_y',
-      'robot_ang',
-      'robot_ang_spd',
-      'robot_lin_spd',
-      'target_x',
-      'target_y',
-      'target_ang',
-      'target_lin_spd',
-      'enc_c1',
-      'enc_c2',
+    const getField = (...keys: string[]) => {
+      for (const key of keys) {
+        const parsed = parseMaybeNumber(payload[key])
+        if (parsed !== null) return parsed
+      }
+      return null
+    }
+
+    const requiredFields: Array<[keyof PositionTelemetry, string[]]> = [
+      ['robot_x', ['robot_x', 'x']],
+      ['robot_y', ['robot_y', 'y']],
+      ['robot_ang', ['robot_ang', 'ang', 'theta']],
+      ['target_x', ['target_x']],
+      ['target_y', ['target_y']],
+      ['target_ang', ['target_ang', 'target_heading']],
+      ['target_ppm1', ['target_ppm1']],
+      ['target_ppm2', ['target_ppm2']],
+      ['enc_c1', ['enc_c1', 'c1']],
+      ['enc_c2', ['enc_c2', 'c2']],
+      ['ppm1', ['ppm1']],
+      ['ppm2', ['ppm2']],
     ]
 
     let missingCount = 0
-    for (const key of requiredKeys) {
-      const raw = payload[key]
-      if (typeof raw === 'number') {
-        result[key] = raw
+    for (const [key, aliases] of requiredFields) {
+      const value = getField(...aliases)
+      if (value !== null) {
+        result[key] = value
         continue
       }
-      if (typeof raw === 'string') {
-        const num = Number(raw)
-        if (!Number.isNaN(num)) {
-          result[key] = num
-          continue
-        }
-      }
-      // If missing or invalid, log it but allow with default value
       result[key] = 0
       missingCount++
       console.warn(`[RobotPosition] Missing or invalid required field: ${key}`)
     }
 
-    // If too many fields are missing, it's probably the wrong data format
-    if (missingCount > requiredKeys.length / 2) {
+    // Timestamp is optional in the compact payload; fall back to receive time.
+    const timestamp = getField('timestamp', 'ts', 'time')
+    result.timestamp = timestamp !== null ? normalizeTimestamp(timestamp) : normalizeTimestamp(Date.now())
+
+    // If too many fields are missing, it's probably the wrong data format.
+    if (missingCount > requiredFields.length / 2) {
       console.error('[RobotPosition] More than half of required fields missing. Payload:', payload)
       return null
     }
 
-    // rpm1/rpm2 are optional; accept numbers if present, otherwise default to 0
-    const maybeRpm1 = payload['rpm1']
-    const maybeRpm2 = payload['rpm2']
-    const maybeRpmArr = payload['rpm']
-    const parseMaybeNumber = (v: unknown) => {
-      if (typeof v === 'number') return v
-      if (typeof v === 'string') {
-        const n = Number(v)
-        return Number.isNaN(n) ? null : n
+    result.ppm1 = getField('ppm1', 'm1') ?? 0
+    result.ppm2 = getField('ppm2', 'm2') ?? 0
+
+    // parse pin values if present at top-level or under a 'pins' object
+    const getPin = (key: string) => {
+      const top = parseMaybeNumber(payload[key])
+      if (top !== null) return top
+      const pinsObj = (payload['pins'] || payload['PINS']) as Record<string, unknown> | undefined
+      if (pinsObj && typeof pinsObj === 'object') {
+        const v = parseMaybeNumber(pinsObj[key])
+        if (v !== null) return v
       }
-      return null
+      return 0
     }
 
-    const r1 = parseMaybeNumber(maybeRpm1)
-    const r2 = parseMaybeNumber(maybeRpm2)
-
-    if (r1 !== null && r2 !== null) {
-      result.rpm1 = r1
-      result.rpm2 = r2
-    } else if (Array.isArray(maybeRpmArr) && maybeRpmArr.length >= 2) {
-      const a0 = parseMaybeNumber(maybeRpmArr[0])
-      const a1 = parseMaybeNumber(maybeRpmArr[1])
-      result.rpm1 = a0 !== null ? a0 : 0
-      result.rpm2 = a1 !== null ? a1 : 0
-    } else {
-      result.rpm1 = 0
-      result.rpm2 = 0
-    }
+    result.e1clk = getPin('e1clk')
+    result.e1dt = getPin('e1dt')
+    result.e2clk = getPin('e2clk')
+    result.e2dt = getPin('e2dt')
 
     return result as PositionTelemetry
   }
@@ -244,10 +268,10 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
           ...prev.slice(-99),
           { x: parsed.robot_x, y: parsed.robot_y, timestamp: parsed.timestamp },
         ])
-        // record rpm history (using telemetry timestamp)
-        setRpmHistory((prev) => [...prev.slice(-239), { time: parsed.timestamp, rpm1: parsed.rpm1, rpm2: parsed.rpm2 }])
-        // record linear speed history
-        setSpeedHistory((prev) => [...prev.slice(-119), { time: parsed.timestamp, speed: parsed.robot_lin_spd }])
+        // record ppm history (using telemetry timestamp)
+        setPpmHistory((prev) => [...prev.slice(-239), { time: parsed.timestamp, ppm1: parsed.ppm1, ppm2: parsed.ppm2 }])
+        // record encoder pin history (keep recent samples only)
+        setPinsHistory((prev) => [...prev.slice(-20), { time: parsed.timestamp, e1CLK: parsed.e1clk, e1DT: parsed.e1dt, e2CLK: parsed.e2clk, e2DT: parsed.e2dt }])
         setIsConnected(true)
       } catch (error) {
         console.error('Failed to fetch position data:', error)
@@ -274,7 +298,7 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
     void fetchPositionData()
     const interval = window.setInterval(() => {
       void fetchPositionData()
-    }, 500)
+    }, 1000)
 
     return () => {
       isMounted = false
@@ -285,17 +309,17 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
   useEffect(() => {
     // initialize from localStorage
     try {
-      const stored = localStorage.getItem('lastRpmCommandTimestamp')
-      if (stored) setLastRpmCommandTimestamp(Number(stored))
+      const stored = localStorage.getItem('lastPpmCommandTimestamp')
+      if (stored) setLastPpmCommandTimestamp(normalizeTimestamp(Number(stored)))
     } catch {}
 
     try {
-      const storedTargets = localStorage.getItem('rpmTargets')
+      const storedTargets = localStorage.getItem('ppmTargets')
       if (storedTargets) {
-        const parsedTargets = JSON.parse(storedTargets) as { rpm1?: number; rpm2?: number }
-        setRpmTargets({
-          rpm1: typeof parsedTargets.rpm1 === 'number' ? parsedTargets.rpm1 : null,
-          rpm2: typeof parsedTargets.rpm2 === 'number' ? parsedTargets.rpm2 : null,
+        const parsedTargets = JSON.parse(storedTargets) as { ppm1?: number; ppm2?: number }
+        setPpmTargets({
+          ppm1: typeof parsedTargets.ppm1 === 'number' ? parsedTargets.ppm1 : null,
+          ppm2: typeof parsedTargets.ppm2 === 'number' ? parsedTargets.ppm2 : null,
         })
       }
     } catch {}
@@ -303,26 +327,26 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
     const handler = (e: Event) => {
       try {
         const detail = (e as CustomEvent).detail as number
-        if (typeof detail === 'number') setLastRpmCommandTimestamp(detail)
+        if (typeof detail === 'number') setLastPpmCommandTimestamp(normalizeTimestamp(detail))
       } catch {}
     }
 
     const targetHandler = (e: Event) => {
       try {
-        const detail = (e as CustomEvent).detail as { rpm1?: number; rpm2?: number } | null
+        const detail = (e as CustomEvent).detail as { ppm1?: number; ppm2?: number } | null
         if (!detail) return
-        setRpmTargets({
-          rpm1: typeof detail.rpm1 === 'number' ? detail.rpm1 : null,
-          rpm2: typeof detail.rpm2 === 'number' ? detail.rpm2 : null,
+        setPpmTargets({
+          ppm1: typeof detail.ppm1 === 'number' ? detail.ppm1 : null,
+          ppm2: typeof detail.ppm2 === 'number' ? detail.ppm2 : null,
         })
       } catch {}
     }
 
-    window.addEventListener('lastRpmCommand', handler as EventListener)
-    window.addEventListener('rpmTargetsUpdated', targetHandler as EventListener)
+    window.addEventListener('lastPpmCommand', handler as EventListener)
+    window.addEventListener('ppmTargetsUpdated', targetHandler as EventListener)
     return () => {
-      window.removeEventListener('lastRpmCommand', handler as EventListener)
-      window.removeEventListener('rpmTargetsUpdated', targetHandler as EventListener)
+      window.removeEventListener('lastPpmCommand', handler as EventListener)
+      window.removeEventListener('ppmTargetsUpdated', targetHandler as EventListener)
     }
   }, [])
 
@@ -331,10 +355,10 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
 
     const resetTimer = window.setTimeout(() => {
       setHistory([])
-      setRpmHistory([])
-      setSpeedHistory([])
+      setPpmHistory([])
+      setPpmTargets({ ppm1: null, ppm2: null })
       setTelemetry(EMPTY_TELEMETRY)
-      setRpmTargets({ rpm1: null, rpm2: null })
+      setPpmTargets({ ppm1: null, ppm2: null })
       setIsResetView(false)
     }, 2000)
 
@@ -363,15 +387,16 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
 
   const mapToCanvas = (value: number) => ((value - mapBounds.min) / mapBounds.span) * 200
 
-  
-
   const formatTimestamp = (ts: number) => {
     if (!ts) return '—'
-    // If timestamp looks like milliseconds (>1e12) use directly,
-    // if it's in seconds (typical <1e11) convert to ms.
-    const dateMs = ts > 1e12 ? ts : ts > 1e9 ? ts : ts * 1000
-    const d = new Date(dateMs)
+    const d = new Date(ts)
     return d.toLocaleString()
+  }
+
+  const formatClockTime = (ts: number) => {
+    if (!ts) return ''
+    const d = new Date(ts)
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
   }
 
   return (
@@ -418,6 +443,34 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
           <p className="map-label">Robot (blue) and Target (red) | Auto-scaled map</p>
         </div>
 
+        <h3>Encoder 1 Pins (CLK / DT)</h3>
+        <div style={{ width: '100%', height: 140 }}>
+          <ResponsiveContainer width="100%" height={120}>
+            <LineChart data={pinsHistory.map((d) => ({ time: d.time, clk: d.e1CLK, dt: d.e1DT + 2 }))} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="time" tickFormatter={(t) => formatClockTime(Number(t))} />
+              <YAxis domain={[0, 1]} tickCount={2} allowDecimals={false} />
+              <Tooltip labelFormatter={(t) => formatTimestamp(Number(t))} formatter={(v) => Number(v).toFixed(0)} />
+              <Line type="stepAfter" dataKey="clk" stroke="#1976d2" name="CLK" dot={false} isAnimationActive={false} />
+              <Line type="stepAfter" dataKey="dt" stroke="#ef6c00" name="DT" dot={false} isAnimationActive={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        <h3>Encoder 2 Pins (CLK / DT)</h3>
+        <div style={{ width: '100%', height: 140 }}>
+          <ResponsiveContainer width="100%" height={120}>
+            <LineChart data={pinsHistory.map((d) => ({ time: d.time, clk: d.e2CLK, dt: d.e2DT + 2 }))} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="time" tickFormatter={(t) => formatClockTime(Number(t))} />
+              <YAxis domain={[0, 1]} tickCount={2} allowDecimals={false} />
+              <Tooltip labelFormatter={(t) => formatTimestamp(Number(t))} formatter={(v) => Number(v).toFixed(0)} />
+              <Line type="stepAfter" dataKey="clk" stroke="#1976d2" name="CLK" dot={false} isAnimationActive={false} />
+              <Line type="stepAfter" dataKey="dt" stroke="#ef6c00" name="DT" dot={false} isAnimationActive={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
         <div className="position-stats">
           <div className="stat-item">
             <label>Timestamp</label>
@@ -436,14 +489,6 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
             <div className="stat-value">{telemetry.robot_ang.toFixed(1)} deg</div>
           </div>
           <div className="stat-item">
-            <label>Robot Ang Speed</label>
-            <div className="stat-value">{telemetry.robot_ang_spd.toFixed(1)}</div>
-          </div>
-          <div className="stat-item">
-            <label>Robot Lin Speed</label>
-            <div className="stat-value">{telemetry.robot_lin_spd.toFixed(1)} mm/s</div>
-          </div>
-          <div className="stat-item">
             <label>Target X</label>
             <div className="stat-value">{telemetry.target_x.toFixed(1)} mm</div>
           </div>
@@ -456,8 +501,12 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
             <div className="stat-value">{telemetry.target_ang.toFixed(1)} deg</div>
           </div>
           <div className="stat-item">
-            <label>Target Lin Speed</label>
-            <div className="stat-value">{telemetry.target_lin_spd.toFixed(1)} mm/s</div>
+            <label>Target PPM 1</label>
+            <div className="stat-value">{telemetry.target_ppm1.toFixed(1)}</div>
+          </div>
+          <div className="stat-item">
+            <label>Target PPM 2</label>
+            <div className="stat-value">{telemetry.target_ppm2.toFixed(1)}</div>
           </div>
           <div className="stat-item">
             <label>Trail Points</label>
@@ -472,12 +521,12 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
             <div className="stat-value">{telemetry.enc_c2}</div>
           </div>
           <div className="stat-item">
-            <label>Motor RPM 1</label>
-            <div className="stat-value">{telemetry.rpm1.toFixed(1)} RPM</div>
+            <label>Motor PPM 1</label>
+            <div className="stat-value">{telemetry.ppm1.toFixed(1)} RPM</div>
           </div>
           <div className="stat-item">
-            <label>Motor RPM 2</label>
-            <div className="stat-value">{telemetry.rpm2.toFixed(1)} RPM</div>
+            <label>Motor PPM 2</label>
+            <div className="stat-value">{telemetry.ppm2.toFixed(1)} RPM</div>
           </div>
         </div>
       </div>
@@ -486,88 +535,58 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
         <h3>Motor RPM 1 (RPM)</h3>
         <div style={{ width: '100%', height: 180 }}>
           <ResponsiveContainer width="100%" height={160}>
-            <LineChart data={rpmHistory.map((d) => ({ time: d.time, rpm: d.rpm1 }))} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+            <LineChart data={ppmHistory.map((d) => ({ time: d.time, rpm: d.ppm1 }))} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="time"
-                tickFormatter={(t) => {
-                  if (!t) return ''
-                  const ms = t > 1e12 ? t : t > 1e9 ? t : t * 1000
-                  const d = new Date(ms)
-                  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
-                }}
-                />
+                tickFormatter={(t) => formatClockTime(Number(t))}
+              />
               <YAxis label={{ value: 'RPM', angle: -90, position: 'insideLeft' }} />
               <Tooltip labelFormatter={(t) => formatTimestamp(Number(t))} />
               <Line type="monotone" dataKey="rpm" stroke="#8884d8" name="RPM 1" dot={false} isAnimationActive={false} />
-              {rpmTargets.rpm1 !== null && (
+              {ppmTargets.ppm1 !== null && (
                 <ReferenceLine
-                  y={rpmTargets.rpm1}
+                  y={ppmTargets.ppm1}
                   stroke="#00aa00"
                   strokeDasharray="5 5"
-                  label={{ value: 'Target RPM 1', position: 'insideTopLeft', fill: '#00aa00' }}
+                  label={{ value: 'Target PPM 1', position: 'insideTopLeft', fill: '#00aa00' }}
                 />
               )}
-              {lastRpmCommandTimestamp !== null && (
-                <ReferenceLine x={lastRpmCommandTimestamp} stroke="#00aa00" strokeDasharray="5 5" label={{ value: 'RPM Cmd', position: 'top', fill: '#00aa00' }} />
+              {lastPpmCommandTimestamp !== null && (
+                <ReferenceLine x={lastPpmCommandTimestamp} stroke="#00aa00" strokeDasharray="5 5" label={{ value: 'PPM Cmd', position: 'top', fill: '#00aa00' }} />
               )}
             </LineChart>
           </ResponsiveContainer>
         </div>
 
-        <h3>Motor RPM 2 (RPM)</h3>
+        <h3>Motor PPM 2 (PPM)</h3>
         <div style={{ width: '100%', height: 180 }}>
           <ResponsiveContainer width="100%" height={160}>
-            <LineChart data={rpmHistory.map((d) => ({ time: d.time, rpm: d.rpm2 }))} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+            <LineChart data={ppmHistory.map((d) => ({ time: d.time, rpm: d.ppm2 }))} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="time"
-                tickFormatter={(t) => {
-                  if (!t) return ''
-                  const ms = t > 1e12 ? t : t > 1e9 ? t : t * 1000
-                  const d = new Date(ms)
-                  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
-                }}
-                />
-              <YAxis label={{ value: 'RPM', angle: -90, position: 'insideLeft' }} />
+                tickFormatter={(t) => formatClockTime(Number(t))}
+              />
+              <YAxis label={{ value: 'PPM', angle: -90, position: 'insideLeft' }} />
               <Tooltip labelFormatter={(t) => formatTimestamp(Number(t))} />
               <Line type="monotone" dataKey="rpm" stroke="#82ca9d" name="RPM 2" dot={false} isAnimationActive={false} />
-              {rpmTargets.rpm2 !== null && (
+              {ppmTargets.ppm2 !== null && (
                 <ReferenceLine
-                  y={rpmTargets.rpm2}
+                  y={ppmTargets.ppm2}
                   stroke="#00aa00"
                   strokeDasharray="5 5"
-                  label={{ value: 'Target RPM 2', position: 'insideTopLeft', fill: '#00aa00' }}
+                  label={{ value: 'Target PPM 2', position: 'insideTopLeft', fill: '#00aa00' }}
                 />
               )}
-              {lastRpmCommandTimestamp !== null && (
-                <ReferenceLine x={lastRpmCommandTimestamp} stroke="#00aa00" strokeDasharray="5 5" label={{ value: 'RPM Cmd', position: 'top', fill: '#00aa00' }} />
+              {lastPpmCommandTimestamp !== null && (
+                <ReferenceLine x={lastPpmCommandTimestamp} stroke="#00aa00" strokeDasharray="5 5" label={{ value: 'PPM Cmd', position: 'top', fill: '#00aa00' }} />
               )}
             </LineChart>
           </ResponsiveContainer>
         </div>
 
-        <h3>Robot Linear Speed (mm/s)</h3>
-        <div style={{ width: '100%', height: 200 }}>
-          <ResponsiveContainer width="100%" height={180}>
-            <LineChart data={speedHistory.map((d) => ({ time: d.time, speed: d.speed }))} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis
-                dataKey="time"
-                tickFormatter={(t) => {
-                  if (!t) return ''
-                  const ms = t > 1e12 ? t : t > 1e9 ? t : t * 1000
-                  const d = new Date(ms)
-                  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
-                }}
-                />
-              <YAxis label={{ value: 'mm/s', angle: -90, position: 'insideLeft' }} />
-              <Tooltip labelFormatter={(t) => formatTimestamp(Number(t))} formatter={(value) => `${Number(value).toFixed(1)} mm/s`} />
-              <Line type="monotone" dataKey="speed" stroke="#FF9800" name="Linear Speed" dot={false} isAnimationActive={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-        <p className="graph-label">Shows last {rpmHistory.length} RPM samples and {speedHistory.length} speed samples</p>
+        <p className="graph-label">Shows the most recent RPM samples and target overlays.</p>
       </div>
     </div>
   )

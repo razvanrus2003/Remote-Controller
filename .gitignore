@@ -34,3 +34,10 @@ log/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Model binaries (keep out of git unless you want them tracked)
+models/*.onnx
+models/*.pt
+models/*.pth
+models/*.bin
+models/*.zip

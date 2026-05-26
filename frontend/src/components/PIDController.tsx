@@ -9,11 +9,24 @@ interface PIDValues {
   kd: number
 }
 
+interface PIDInputValues {
+  kp: string
+  ki: string
+  kd: string
+}
+
 interface ControllerConfig {
   S: PIDValues
   P: PIDValues
   H: PIDValues
   A: PIDValues
+}
+
+interface ControllerInputConfig {
+  S: PIDInputValues
+  P: PIDInputValues
+  H: PIDInputValues
+  A: PIDInputValues
 }
 
 const DEFAULT_CONFIG: ControllerConfig = {
@@ -23,8 +36,15 @@ const DEFAULT_CONFIG: ControllerConfig = {
   A: { kp: 0, ki: 0, kd: 0 },
 }
 
+const DEFAULT_INPUT_CONFIG: ControllerInputConfig = {
+  S: { kp: '0', ki: '0', kd: '0' },
+  P: { kp: '0', ki: '0', kd: '0' },
+  H: { kp: '0', ki: '0', kd: '0' },
+  A: { kp: '0', ki: '0', kd: '0' },
+}
+
 export default function PIDController() {
-  const [editingConfig, setEditingConfig] = useState<ControllerConfig>(DEFAULT_CONFIG)
+  const [editingConfig, setEditingConfig] = useState<ControllerInputConfig>(DEFAULT_INPUT_CONFIG)
   const [currentConfig, setCurrentConfig] = useState<ControllerConfig>(DEFAULT_CONFIG)
   const [activeController, setActiveController] = useState<'S' | 'P' | 'H' | 'A'>('S')
   const [isLoading, setIsLoading] = useState(false)
@@ -38,14 +58,19 @@ export default function PIDController() {
   ]
 
   const handleValueChange = (field: keyof PIDValues, value: string) => {
-    const numValue = value === '' ? 0 : parseFloat(value) || 0
     setEditingConfig((prev) => ({
       ...prev,
       [activeController]: {
         ...prev[activeController],
-        [field]: numValue,
+        [field]: value,
       },
     }))
+  }
+
+  const parsePidValue = (value: string) => {
+    const parsedValue = Number.parseFloat(value)
+
+    return Number.isFinite(parsedValue) ? parsedValue : 0
   }
 
   const handleSubmit = async () => {
@@ -55,10 +80,11 @@ export default function PIDController() {
     setMessage(null)
 
     try {
+      const activeValues = editingConfig[activeController]
       const pidValues = [
-        editingConfig[activeController].kp,
-        editingConfig[activeController].ki,
-        editingConfig[activeController].kd,
+        parsePidValue(activeValues.kp),
+        parsePidValue(activeValues.ki),
+        parsePidValue(activeValues.kd),
       ]
 
       const response = await axios.post(
@@ -70,7 +96,11 @@ export default function PIDController() {
       // Update current config only on successful apply
       setCurrentConfig((prev) => ({
         ...prev,
-        [activeController]: { ...editingConfig[activeController] },
+        [activeController]: {
+          kp: parsePidValue(activeValues.kp),
+          ki: parsePidValue(activeValues.ki),
+          kd: parsePidValue(activeValues.kd),
+        },
       }))
 
       setMessage({
@@ -117,7 +147,8 @@ export default function PIDController() {
             id="kp"
             type="number"
             step="0.01"
-            value={editingConfig[activeController].kp || ''}
+            inputMode="decimal"
+            value={editingConfig[activeController].kp}
             placeholder="0"
             onChange={(e) => handleValueChange('kp', e.target.value)}
             disabled={isLoading}
@@ -130,7 +161,8 @@ export default function PIDController() {
             id="ki"
             type="number"
             step="0.01"
-            value={editingConfig[activeController].ki || ''}
+            inputMode="decimal"
+            value={editingConfig[activeController].ki}
             placeholder="0"
             onChange={(e) => handleValueChange('ki', e.target.value)}
             disabled={isLoading}
@@ -143,7 +175,8 @@ export default function PIDController() {
             id="kd"
             type="number"
             step="0.01"
-            value={editingConfig[activeController].kd || ''}
+            inputMode="decimal"
+            value={editingConfig[activeController].kd}
             placeholder="0"
             onChange={(e) => handleValueChange('kd', e.target.value)}
             disabled={isLoading}

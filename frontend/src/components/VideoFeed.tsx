@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import '../styles/VideoFeed.css'
 
 interface VideoFeedProps {
-  controllerUrl: string
+  controllerUrl?: string
 }
 
 interface ObstacleStatus {
@@ -21,13 +21,14 @@ export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
   const [isDepthMapConnected, setIsDepthMapConnected] = useState(false)
   const [depthMapError, setDepthMapError] = useState<string | null>(null)
   const [obstacleStatus, setObstacleStatus] = useState<ObstacleStatus | null>(null)
-
+  const baseController = (controllerUrl && controllerUrl.replace(/\/$/, ''))
+  const videoStreamUrl = 'http://localhost:8080'
   useEffect(() => {
     let isMounted = true
 
     const fetchObstacleStatus = async () => {
       try {
-        const response = await fetch(`${controllerUrl}/obstacle`)
+        const response = await fetch(`${baseController}/obstacle`)
         const data = (await response.json()) as ObstacleStatus
 
         if (!isMounted) {
@@ -48,13 +49,13 @@ export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
     void fetchObstacleStatus()
     const interval = window.setInterval(() => {
       void fetchObstacleStatus()
-    }, 750)
+    }, 1000)
 
     return () => {
       isMounted = false
       window.clearInterval(interval)
     }
-  }, [controllerUrl])
+  }, [baseController])
 
   const obstacleBadgeClass = obstacleStatus?.blocked
     ? 'blocked'
@@ -84,7 +85,7 @@ export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
 
           <div className="video-container">
             <img
-              src={`${controllerUrl}/video`}
+              src={`${videoStreamUrl}/stream?topic=/camera/image&type=ros_compressed`}
               alt="Robot Video Feed"
               className="video-stream"
               onError={() => {
@@ -103,7 +104,7 @@ export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
                   {error || 'Video stream connecting...'}
                 </div>
                 <small className="placeholder-hint">
-                  Ensure the external camera publisher is running on <code>/camera/image/compressed</code>
+                  Ensure the external camera publisher is running at <code>/stream?topic=/camera/image/compressed</code>
                 </small>
               </div>
             )}
@@ -135,7 +136,7 @@ export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
 
           <div className="depth-map-container">
             <img
-              src={`${controllerUrl}/depth-map`}
+              src={`${videoStreamUrl}/stream?topic=/depth_map/image&type=ros_compressed`}
               alt="Robot Depth Video Feed"
               className="depth-map-stream"
               onError={() => {
@@ -154,14 +155,14 @@ export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
                   {depthMapError || 'Depth video unavailable'}
                 </div>
                 <small className="placeholder-hint">
-                  Ensure backend <code>/depth-map</code> stream is running
+                  Ensure backend depth publisher is running at <code>/stream?topic=/depth_map/image/compressed</code>
                 </small>
               </div>
             )}
           </div>
 
           <div className="depth-map-info">
-            <small>Live depth stream • /depth-map • Matching dimensions to the video feed</small>
+            <small>Live depth stream • /stream?topic=/depth_map/image/compressed • Matching dimensions to the video feed</small>
           </div>
         </div>
       </div>

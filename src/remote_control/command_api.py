@@ -1,10 +1,19 @@
 import logging
+import os
 import threading
 import time
+import json
 
-from .runtime_bootstrap import ensure_venv_python_has_onnxruntime
+# try:
+#     from .runtime_bootstrap import ensure_venv_python_has_onnxruntime
+# except Exception:
+#     try:
+#         from remote_control.runtime_bootstrap import ensure_venv_python_has_onnxruntime
+#     except Exception:
+#         def ensure_venv_python_has_onnxruntime():
+#             return
 
-ensure_venv_python_has_onnxruntime()
+# ensure_venv_python_has_onnxruntime()
 
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
@@ -12,37 +21,67 @@ from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
 from rclpy.node import Node
 from std_msgs.msg import String
-
-from .video_ml import VideoMlNode
-from .shared_state import SharedRuntimeState
+from sensor_msgs.msg import CompressedImage
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class CommandApiNode(Node):
-    def __init__(self, shared_state: SharedRuntimeState):
+    def __init__(self):
         super().__init__('remote_command_api')
-        self.shared_state = shared_state
         self.command_topic_name = 'command'
         self.command_publisher = self.create_publisher(String, self.command_topic_name, 10)
         self.health_timeout_sec = 3.0
 
-        self.health_subscription = self.create_subscription(String, '/health', self.handle_health_message, 10)
-        self.telemetry_subscription = self.create_subscription(String, '/position', self.handle_telemetry, 10)
+        self.health_subscription = self.create_subscription(String, '/health', self.handle_health_message, 1)
+        self.telemetry_subscription = self.create_subscription(String, '/position', self.handle_telemetry, 1)
+        # Subscribe to obstacle analysis topic published by VideoMlNode
+        self.latest_obstacle = None
+        self.latest_obstacle_received_at = None
+        self.obstacle_subscription = self.create_subscription(String, '/obstacle', self.handle_obstacle_message, 1)
+        
+        # Local runtime state and synchronization (replaces shared_state module)
+        self.health_lock = threading.Lock()
+        self.last_health = None
+        self.last_health_received_at = None
+
+        self.telemetry_lock = threading.Lock()
+        self.latest_telemetry = None
+
+        self.obstacle_lock = threading.Lock()
+        self.latest_obstacle_state = None
+
+        self.endpoint_frame_lock = threading.Lock()
+        self.latest_frame_endpoint_received_at = None
+        
 
     def handle_health_message(self, msg: String):
-        with self.shared_state.health_lock:
-            self.shared_state.last_health = msg.data
-            self.shared_state.last_health_received_at = time.monotonic()
+        with self.health_lock:
+            self.last_health = msg.data
+            self.last_health_received_at = time.monotonic()
 
     def handle_telemetry(self, msg: String):
-        with self.shared_state.telemetry_lock:
-            self.shared_state.latest_telemetry = msg.data
+        with self.telemetry_lock:
+            self.latest_telemetry = msg.data
+
+    def handle_obstacle_message(self, msg: String):
+        try:
+            obj = json.loads(msg.data)
+        except Exception:
+            obj = {'status': 'unknown', 'reason': 'invalid_obstacle_message', 'raw': msg.data}
+        # keep a local copy for the API to serve; still update shared_state for compatibility
+        try:
+            with self.obstacle_lock:
+                self.latest_obstacle_state = obj
+        except Exception:
+            pass
+        self.latest_obstacle = obj
+        self.latest_obstacle_received_at = time.monotonic()
 
     def is_health_stale(self):
-        with self.shared_state.health_lock:
-            last_health_received_at = self.shared_state.last_health_received_at
+        with self.health_lock:
+            last_health_received_at = self.last_health_received_at
 
         if last_health_received_at is None:
             return True
@@ -103,47 +142,12 @@ def create_app(command_node: CommandApiNode):
     app = Flask(__name__)
     CORS(app)
 
-    def generate_video_mjpeg():
-        boundary = b'frame'
-        last_processed_seq = -1
+    # NOTE: Video streaming is handled by the ROS `web_video_server` node.
+    # The Flask endpoints below will redirect clients to the web_video_server
+    # stream URLs. Configure the camera/depth topics via environment vars:
+    # `CAMERA_TOPIC`, `DEPTH_TOPIC`, and `WEB_VIDEO_PORT`.
 
-        while True:
-            with command_node.shared_state.frame_lock:
-                frame_seq = command_node.shared_state.latest_frame_seq
-                frame_bytes = command_node.shared_state.latest_frame
-
-            if frame_bytes is None or frame_seq == last_processed_seq:
-                command_node.shared_state.frame_event.wait(timeout=5.0)
-                continue
-
-            last_processed_seq = frame_seq
-            part = (
-                b'--' + boundary + b'\r\n'
-                b'Content-Type: image/jpeg\r\n'
-                b'Content-Length: ' + str(len(frame_bytes)).encode() + b'\r\n\r\n' + frame_bytes + b'\r\n'
-            )
-            yield part
-
-    def generate_depth_mjpeg():
-        boundary = b'frame'
-        last_processed_seq = -1
-
-        while True:
-            with command_node.shared_state.depth_map_lock:
-                depth_jpeg = command_node.shared_state.latest_depth_map_jpeg
-                depth_seq = command_node.shared_state.latest_depth_map_seq
-
-            if depth_jpeg is None or depth_seq == last_processed_seq:
-                command_node.shared_state.depth_event.wait(timeout=5.0)
-                continue
-
-            last_processed_seq = depth_seq
-            part = (
-                b'--' + boundary + b'\r\n'
-                b'Content-Type: image/jpeg\r\n'
-                b'Content-Length: ' + str(len(depth_jpeg)).encode() + b'\r\n\r\n' + depth_jpeg + b'\r\n'
-            )
-            yield part
+    # depth streaming is also handled by `web_video_server`; see routes below.
 
     @app.route('/health', methods=['GET'])
     def health_check():
@@ -153,8 +157,8 @@ def create_app(command_node: CommandApiNode):
                 'status': 'unhealthy',
             }), 503
 
-        with command_node.shared_state.health_lock:
-            last_health = command_node.shared_state.last_health
+        with command_node.health_lock:
+            last_health = command_node.last_health
 
         return jsonify({
             'status': 'healthy',
@@ -163,8 +167,8 @@ def create_app(command_node: CommandApiNode):
 
     @app.route('/position', methods=['GET'])
     def get_position():
-        with command_node.shared_state.telemetry_lock:
-            telemetry = command_node.shared_state.latest_telemetry
+        with command_node.telemetry_lock:
+            telemetry = command_node.latest_telemetry
 
         if not telemetry:
             return jsonify({
@@ -176,42 +180,54 @@ def create_app(command_node: CommandApiNode):
 
     @app.route('/obstacle', methods=['GET'])
     def get_obstacle_status():
-        with command_node.shared_state.obstacle_lock:
-            state = dict(command_node.shared_state.latest_obstacle_state)
+        # Prefer the latest obstacle analysis published on /depth_map/obstacle
+        if command_node.latest_obstacle is None:
+            # no obstacle messages received yet
+            state = {
+                'status': 'unknown',
+                'reason': 'waiting for obstacle topic',
+                'stale': True,
+                'frame_age_sec': None,
+            }
+            return jsonify(state), 200
 
-        with command_node.shared_state.frame_lock:
-            last_frame_at = command_node.shared_state.latest_frame_received_at
+        state = dict(command_node.latest_obstacle)
+
+        with command_node.endpoint_frame_lock:
+            last_frame_at = command_node.latest_frame_endpoint_received_at
 
         if last_frame_at is None:
             state['stale'] = True
             state['frame_age_sec'] = None
-            if state['status'] == 'unknown':
+            if state.get('status') == 'unknown':
                 state['reason'] = 'waiting for camera frames'
             return jsonify(state), 200
 
         frame_age_sec = time.monotonic() - last_frame_at
         state['frame_age_sec'] = round(frame_age_sec, 3)
         state['stale'] = frame_age_sec > 1.5
-        if state['stale'] and state['status'] == 'unknown':
+        if state['stale'] and state.get('status') == 'unknown':
             state['reason'] = 'camera feed is stale'
 
         return jsonify(state), 200
 
     @app.route('/video')
     def video_feed():
-        return Response(
-            stream_with_context(generate_video_mjpeg()),
-            mimetype='multipart/x-mixed-replace; boundary=frame',
-            headers={'Cache-Control': 'no-store'},
-        )
+        # Redirect clients to the `web_video_server` stream for the configured camera topic.
+        camera_topic = os.environ.get('CAMERA_TOPIC', '/camera/image/compressed')
+        web_port = os.environ.get('WEB_VIDEO_PORT', '8080')
+        # Use request.host to keep hostname, but replace port with web_video_server port.
+        host = request.host.split(':')[0]
+        stream_url = f'http://{host}:{web_port}/stream?topic={camera_topic}'
+        return jsonify({'stream_url': stream_url}), 302
 
     @app.route('/depth-map', methods=['GET'])
     def get_depth_map():
-        return Response(
-            stream_with_context(generate_depth_mjpeg()),
-            mimetype='multipart/x-mixed-replace; boundary=frame',
-            headers={'Cache-Control': 'no-store'},
-        )
+        depth_topic = os.environ.get('DEPTH_TOPIC', '/depth_map/image/compressed')
+        web_port = os.environ.get('WEB_VIDEO_PORT', '8080')
+        host = request.host.split(':')[0]
+        stream_url = f'http://{host}:{web_port}/stream?topic={depth_topic}'
+        return jsonify({'stream_url': stream_url}), 302
 
     @app.route('/command/power', methods=['POST'])
     def receive_power_command():
@@ -367,19 +383,15 @@ def run_flask_server(command_node: CommandApiNode, host='0.0.0.0', port=5000):
 
 def main(args=None):
     rclpy.init(args=args)
-    shared_state = SharedRuntimeState()
-    command_node = CommandApiNode(shared_state)
-    video_node = VideoMlNode(shared_state)
+    command_node = CommandApiNode()
     flask_thread = threading.Thread(target=run_flask_server, args=(command_node,), daemon=True)
     flask_thread.start()
     try:
         executor = MultiThreadedExecutor()
         executor.add_node(command_node)
-        executor.add_node(video_node)
         executor.spin()
     finally:
         command_node.destroy_node()
-        video_node.destroy_node()
         rclpy.shutdown()
 
 

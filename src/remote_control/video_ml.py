@@ -3,18 +3,78 @@ import logging
 import os
 import threading
 import time
-
-from .runtime_bootstrap import ensure_venv_python_has_onnxruntime
-
-ensure_venv_python_has_onnxruntime()
+import pathlib
+import subprocess
+import sys
 
 import numpy as np
-import rclpy
-from rclpy.node import Node
 from PIL import Image, ImageFilter, ImageOps, ImageStat
-from sensor_msgs.msg import CompressedImage
 
-from .shared_state import SharedRuntimeState
+# Make ROS imports optional so the module can run in a non-ROS (custom venv) environment.
+HAS_RCLPY = True
+try:
+    import rclpy
+    from rclpy.node import Node
+    from sensor_msgs.msg import CompressedImage
+    from std_msgs.msg import String
+except Exception:
+    HAS_RCLPY = False
+    Node = object
+    # Define lightweight placeholders for message types so importing the module
+    # doesn't fail; these won't be used in non-ROS mode.
+    class CompressedImage:
+        def __init__(self):
+            self.format = ''
+            self.data = b''
+
+    class String:
+        def __init__(self):
+            self.data = ''
+import json
+
+
+def ensure_venv_python_has_onnxruntime():
+    try:
+        import onnxruntime  # noqa: F401
+        return
+    except Exception:
+        pass
+
+    search_roots = [pathlib.Path.cwd(), *pathlib.Path(__file__).resolve().parents]
+    venv_python = None
+    for parent in search_roots:
+        for venv_name in ('.venv', 'venv'):
+            candidate = parent / venv_name / 'bin' / 'python'
+            if not candidate.exists():
+                continue
+
+            try:
+                subprocess.run(
+                    [str(candidate), '-c', 'import onnxruntime'],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                continue
+
+            venv_python = candidate
+            break
+        if venv_python is not None:
+            break
+
+    if venv_python is None:
+        raise RuntimeError(
+            'onnxruntime is not available in the current interpreter or any local venv. '
+            'Install it into the project venv with `pip install onnxruntime` before launching.'
+        )
+
+    current_python = pathlib.Path(sys.executable).resolve()
+    if current_python == venv_python.resolve():
+        return
+
+    os.execv(str(venv_python), [str(venv_python), *sys.argv])
+
 
 try:
     from ament_index_python.packages import get_package_share_directory
@@ -22,9 +82,25 @@ except Exception:
     get_package_share_directory = None
 
 try:
+    ensure_venv_python_has_onnxruntime()
     import onnxruntime as ort
 except Exception:
     ort = None
+
+# If running as a script and ROS isn't available, provide a minimal local-mode
+# entrypoint that verifies ONNX runtime and exits gracefully. This lets users
+# execute the module inside a custom virtualenv without needing ROS installed.
+def _run_local_mode():
+    print('Running remote_control.video_ml in local (non-ROS) mode')
+    if ort is None:
+        print('onnxruntime not available. Call ensure_venv_python_has_onnxruntime() or install onnxruntime into the venv.')
+        try:
+            ensure_venv_python_has_onnxruntime()
+        except Exception as e:
+            print('Failed to locate onnxruntime in local venvs:', e)
+            raise
+    print('onnxruntime is available. Exiting (no ROS runtime requested).')
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,12 +109,11 @@ RESAMPLE_BILINEAR = getattr(getattr(Image, 'Resampling', Image), 'BILINEAR', Ima
 
 
 class VideoMlNode(Node):
-    def __init__(self, shared_state: SharedRuntimeState):
+    def __init__(self):
         super().__init__('remote_video_ml')
-        self.shared_state = shared_state
         self.obstacle_detection_interval_sec = 0.2
         # backend selection: 'midas' (default), 'fast', or 'heuristic'
-        self.depth_backend = os.environ.get('DEPTH_BACKEND', 'midas').strip().lower()
+        self.depth_backend = os.environ.get('DEPTH_BACKEND', 'fast').strip().lower()
 
         # configurable boxes via env vars: 'x1,y1,x2,y2' (normalized 0..1)
         def _parse_box_env(name, default):
@@ -58,7 +133,7 @@ class VideoMlNode(Node):
         self.obstacle_box = _parse_box_env('DEPTH_OBSTACLE_BOX', (0.40, 0.45, 0.60, 0.65))
         # preview formats: comma separated list of 'png' and/or 'jpeg'
         self.depth_preview_formats = [s.strip().lower() for s in os.environ.get('DEPTH_PREVIEW_FORMAT', 'jpeg').split(',') if s.strip()]
-        self.depth_preview_quality = int(os.environ.get('DEPTH_PREVIEW_QUALITY', '85'))
+        self.depth_preview_quality = int(os.environ.get('DEPTH_PREVIEW_QUALITY', '40'))
         self.depth_session = None
         self.camera_topic = os.environ.get('CAMERA_TOPIC', '/camera/image/compressed')
 
@@ -66,10 +141,47 @@ class VideoMlNode(Node):
             CompressedImage,
             self.camera_topic,
             self.handle_image,
-            10,
+            1,
+        )
+
+        # Publisher for depth map previews (compressed)
+        self.depth_publisher = self.create_publisher(
+            CompressedImage,
+            '/depth_map/image/compressed',
+            1,
+        )
+        # Publisher for obstacle analysis results (JSON string)
+        self.obstacle_publisher = self.create_publisher(
+            String,
+            '/obstacle',
+            1,
         )
 
         self._init_depth_model()
+
+        # runtime-local shared state (replaces previous shared_state module)
+        self.frame_lock = threading.Lock()
+        self.latest_frame = None
+        self.latest_frame_seq = 0
+        self.latest_frame_received_at = None
+
+        self.endpoint_frame_lock = threading.Lock()
+        self.latest_frame_endpoint = None
+        self.latest_frame_endpoint_seq = 0
+        self.latest_frame_endpoint_received_at = None
+
+        self.frame_event = threading.Event()
+
+        self.obstacle_lock = threading.Lock()
+        self.latest_obstacle_state = None
+
+        self.depth_map_lock = threading.Lock()
+        self.latest_depth_map_png = None
+        self.latest_depth_map_jpeg = None
+        self.latest_depth_map_seq = 0
+        self.latest_depth_map_updated_at = None
+        self.latest_depth_map_backend = None
+        self.depth_event = threading.Event()
 
         self.obstacle_detector_thread = threading.Thread(target=self._obstacle_detection_loop, daemon=True)
         self.obstacle_detector_thread.start()
@@ -216,11 +328,37 @@ class VideoMlNode(Node):
     def handle_image(self, msg: CompressedImage):
         try:
             frame_bytes = bytes(msg.data)
-            with self.shared_state.frame_lock:
-                self.shared_state.latest_frame = frame_bytes
-                self.shared_state.latest_frame_seq += 1
-                self.shared_state.latest_frame_received_at = time.monotonic()
-                self.shared_state.frame_event.set()
+            now = time.monotonic()
+            # Update processing buffer (seq increment happens here)
+            with self.frame_lock:
+                seq = self.latest_frame_seq + 1
+                self.latest_frame = frame_bytes
+                self.latest_frame_seq = seq
+                self.latest_frame_received_at = now
+
+            # Update endpoint buffer separately to avoid contention with processing
+            with self.endpoint_frame_lock:
+                # keep endpoint seq in sync with processing seq
+                self.latest_frame_endpoint = frame_bytes
+                self.latest_frame_endpoint_seq = seq
+                self.latest_frame_endpoint_received_at = now
+                # if paired with a command node in the same process, update its view too
+                try:
+                    cmd = getattr(self, 'command_node', None)
+                    if cmd is not None:
+                        try:
+                            with cmd.endpoint_frame_lock:
+                                cmd.latest_frame_endpoint_received_at = now
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            # Signal new frame (event is thread-safe)
+            try:
+                self.frame_event.set()
+            except Exception:
+                pass
         except Exception as e:
             self.get_logger().warning(f'Failed to handle incoming image: {e}')
 
@@ -230,15 +368,15 @@ class VideoMlNode(Node):
         while rclpy.ok():
             # Wait until a new frame arrives or timeout elapses. Using the event
             # reduces latency because we wake immediately when `handle_image` sets it.
-            self.shared_state.frame_event.wait(timeout=self.obstacle_detection_interval_sec)
+            self.frame_event.wait(timeout=self.obstacle_detection_interval_sec)
 
-            with self.shared_state.frame_lock:
-                frame_bytes = self.shared_state.latest_frame
-                frame_seq = self.shared_state.latest_frame_seq
-                frame_received_at = self.shared_state.latest_frame_received_at
+            with self.frame_lock:
+                frame_bytes = self.latest_frame
+                frame_seq = self.latest_frame_seq
+                frame_received_at = self.latest_frame_received_at
                 # clear the event now that we've read the latest frame
                 try:
-                    self.shared_state.frame_event.clear()
+                    self.frame_event.clear()
                 except Exception:
                     pass
 
@@ -284,17 +422,45 @@ class VideoMlNode(Node):
                 depth_preview_png = None
                 depth_preview_jpeg = None
 
-            with self.shared_state.obstacle_lock:
-                self.shared_state.latest_obstacle_state = state
+            with self.obstacle_lock:
+                self.latest_obstacle_state = state
+            # Publish obstacle analysis as JSON on dedicated topic
+            try:
+                msg = String()
+                # ensure JSON is serializable (state was built from primitives)
+                msg.data = json.dumps(state)
+                self.obstacle_publisher.publish(msg)
+            except Exception as e:
+                try:
+                    self.get_logger().warning(f'Failed to publish obstacle state: {e}')
+                except Exception:
+                    pass
 
             if depth_preview_png is not None or depth_preview_jpeg is not None:
-                with self.shared_state.depth_map_lock:
-                    self.shared_state.latest_depth_map_png = depth_preview_png
-                    self.shared_state.latest_depth_map_jpeg = depth_preview_jpeg
-                    self.shared_state.latest_depth_map_seq = frame_seq
-                    self.shared_state.latest_depth_map_updated_at = time.time()
-                    self.shared_state.latest_depth_map_backend = state.get('backend', 'unknown')
-                    self.shared_state.depth_event.set()
+                with self.depth_map_lock:
+                    self.latest_depth_map_png = depth_preview_png
+                    self.latest_depth_map_jpeg = depth_preview_jpeg
+                    self.latest_depth_map_seq = frame_seq
+                    self.latest_depth_map_updated_at = time.time()
+                    self.latest_depth_map_backend = state.get('backend', 'unknown')
+                    self.depth_event.set()
+                # Publish compressed depth preview on dedicated topic
+                try:
+                    img_bytes = depth_preview_jpeg if depth_preview_jpeg is not None else depth_preview_png
+                    if img_bytes is not None:
+                        comp = CompressedImage()
+                        comp.format = 'jpeg' if depth_preview_jpeg is not None else 'png'
+                        comp.data = bytearray(img_bytes)
+                        try:
+                            comp.header.stamp = self.get_clock().now().to_msg()
+                        except Exception:
+                            pass
+                        self.depth_publisher.publish(comp)
+                except Exception as e:
+                    try:
+                        self.get_logger().warning(f'Failed to publish depth map: {e}')
+                    except Exception:
+                        pass
 
 
     def _analyze_frame_for_obstacles(self, frame_bytes, frame_received_at):
@@ -620,9 +786,9 @@ class VideoMlNode(Node):
         """
         img = Image.open(io.BytesIO(frame_bytes)).convert('L')
         # operate at low resolution for speed
-        small = img.resize((64, 64), RESAMPLE_BILINEAR)
+        # small = img.resize((64, 64), RESAMPLE_BILINEAR)
 
-        arr = np.asarray(small).astype(np.float32)
+        arr = np.asarray(img).astype(np.float32)
         # local variance via gaussian blur subtraction
         blurred = np.asarray(Image.fromarray(arr).filter(ImageFilter.GaussianBlur(radius=2.0))).astype(np.float32)
         var = np.clip((arr - blurred), -255, 255)
@@ -925,9 +1091,14 @@ class VideoMlNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = VideoMlNode(SharedRuntimeState())
+    
+    node = VideoMlNode()
     try:
         rclpy.spin(node)
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

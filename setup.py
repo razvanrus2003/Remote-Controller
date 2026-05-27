@@ -4,11 +4,19 @@ from setuptools import find_packages, setup
 
 package_name = 'remote_control'
 
+# Support both `src/` layout and flat layout when building in different environments
+if os.path.isdir('src'):
+    packages = find_packages(where=['src'], exclude=['test'])
+    package_dir = {'': 'src'}
+else:
+    packages = find_packages(exclude=['test'])
+    package_dir = {}
+
 setup(
     name=package_name,
     version='0.1.0',
-    packages=find_packages(where=['src'], exclude=['test']),
-    package_dir={'': 'src'},
+    packages=packages,
+    package_dir=package_dir,
     install_requires=['setuptools', 'pygame', 'flask', 'flask-cors', 'psutil', 'Pillow', 'numpy', 'onnxruntime'],
     zip_safe=True,
     maintainer='Robot Developer',

@@ -129,8 +129,8 @@ class VideoMlNode(Node):
             return default
 
         # Default floor box: narrower vertical span (smaller height)
-        self.floor_box = _parse_box_env('DEPTH_FLOOR_BOX', (0.45, 0.80, 0.55, 0.95))
-        self.obstacle_box = _parse_box_env('DEPTH_OBSTACLE_BOX', (0.40, 0.45, 0.60, 0.65))
+        self.floor_box = _parse_box_env('DEPTH_FLOOR_BOX', (0.10, 0.80, 0.90, 1))
+        self.obstacle_box = _parse_box_env('DEPTH_OBSTACLE_BOX', (0.20, 0.20, 0.80, 0.80))
         # preview formats: comma separated list of 'png' and/or 'jpeg'
         self.depth_preview_formats = [s.strip().lower() for s in os.environ.get('DEPTH_PREVIEW_FORMAT', 'jpeg').split(',') if s.strip()]
         self.depth_preview_quality = int(os.environ.get('DEPTH_PREVIEW_QUALITY', '40'))
@@ -387,7 +387,7 @@ class VideoMlNode(Node):
 
             try:
                 if self.depth_backend == 'midas' and self.depth_session is not None:
-                    state, depth_preview_png, depth_preview_jpeg = self._analyze_frame_with_onnx(
+                    state, depth_preview_png, depth_preview_jpeg = self_mark_cells._analyze_frame_with_onnx(
                         frame_bytes,
                         frame_received_at,
                     )
@@ -694,7 +694,7 @@ class VideoMlNode(Node):
         block_thresh = float(os.environ.get('DEPTH_BLOCK_SCORE_THRESHOLD', '0.65'))
 
         # Decide blocking using obstacle-zone median threshold (default 0.5)
-        obs_med_thresh = float(os.environ.get('DEPTH_OBS_MEDIAN_THRESHOLD', '0.5'))
+        obs_med_thresh = float(os.environ.get('DEPTH_OBS_MEDIAN_THRESHOLD', '0.4'))
 
         if stats_obstacle.get('median') is not None:
             zone_median_obs = float(stats_obstacle['median'])

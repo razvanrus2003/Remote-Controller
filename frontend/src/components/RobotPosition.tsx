@@ -12,16 +12,16 @@ interface PositionTelemetry {
   target_x: number
   target_y: number
   target_ang: number
-  target_ppm1: number
-  target_ppm2: number
+  target_rpm1: number
+  target_rpm2: number
   enc_c1: number
   enc_c2: number
   e1clk: number
   e1dt: number
   e2clk: number
   e2dt: number
-  ppm1: number
-  ppm2: number
+  rpm1: number
+  rpm2: number
 }
 
 interface HistoryPoint {
@@ -29,6 +29,7 @@ interface HistoryPoint {
   y: number
   timestamp: number
 }
+
 
 const EMPTY_TELEMETRY: PositionTelemetry = {
   timestamp: 0,
@@ -38,30 +39,30 @@ const EMPTY_TELEMETRY: PositionTelemetry = {
   target_x: 0,
   target_y: 0,
   target_ang: 0,
-  target_ppm1: 0,
-  target_ppm2: 0,
+  target_rpm1: 0,
+  target_rpm2: 0,
   enc_c1: 0,
   enc_c2: 0,
   e1clk: 0,
   e1dt: 0,
   e2clk: 0,
   e2dt: 0,
-  ppm1: 0,
-  ppm2: 0,
+  rpm1: 0,
+  rpm2: 0,
 }
 
 export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: number }) {
   const [telemetry, setTelemetry] = useState<PositionTelemetry>(EMPTY_TELEMETRY)
   const [history, setHistory] = useState<HistoryPoint[]>([])
   
-  const [ppmHistory, setPpmHistory] = useState<Array<{ time: number; ppm1: number; ppm2: number }>>([])
+  const [rpmHistory, setRpmHistory] = useState<Array<{ time: number; rpm1: number; rpm2: number }>>([])
   const [pinsHistory, setPinsHistory] = useState<Array<{ time: number; e1CLK: number; e1DT: number; e2CLK: number; e2DT: number }>>([])
-  const [ppmTargets, setPpmTargets] = useState<{ ppm1: number | null; ppm2: number | null }>({
-    ppm1: null,
-    ppm2: null,
+  const [rpmTargets, setRpmTargets] = useState<{ rpm1: number | null; rpm2: number | null }>({
+    rpm1: null,
+    rpm2: null,
   })
   const [isConnected, setIsConnected] = useState(false)
-  const [lastPpmCommandTimestamp, setLastPpmCommandTimestamp] = useState<number | null>(null)
+  const [lastRpmCommandTimestamp, setLastRpmCommandTimestamp] = useState<number | null>(null)
   const [isResetView, setIsResetView] = useState(false)
 
   const normalizeTimestamp = (timestamp: number | undefined) => {
@@ -117,12 +118,12 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
     // Support the older sectioned format as a fallback.
     if (Object.keys(parsed).length === 0) {
       const robot = parseStringSection(payload, /ROBOT\s+x=([^\s|]+)\s+y=([^\s|]+)\s+ang=([^\s|]+)/i)
-      const target = parseStringSection(payload, /TARGET\s+x=([^\s|]+)\s+y=([^\s|]+)\s+ang=([^\s|]+)\s+ppm1=([^\s|]+)\s+ppm2=([^\s|]+)/i)
+      const target = parseStringSection(payload, /TARGET\s+x=([^\s|]+)\s+y=([^\s|]+)\s+ang=([^\s|]+)\s+rpm1=([^\s|]+)\s+rpm2=([^\s|]+)/i)
       const enc = parseStringSection(payload, /ENC\s+c1=([^\s|]+)\s+c2=([^\s|]+)/i)
       const pins = parseStringSection(payload, /PINS\s+e1clk=([^\s|]+)\s+e1dt=([^\s|]+)\s+e2clk=([^\s|]+)\s+e2dt=([^\s|]+)/i)
-      const ppm = parseStringSection(payload, /RPM\s+m1=([^\s|]+)\s+m2=([^\s|]+)/i)
+      const rpmMatch = parseStringSection(payload, /RPM\s+m1=([^\s|]+)\s+m2=([^\s|]+)/i)
 
-      if (!robot || !target || !enc || !pins || !ppm) {
+      if (!robot || !target || !enc || !pins || !rpmMatch) {
         return null
       }
 
@@ -132,16 +133,16 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
       parsed.target_x = target[0]
       parsed.target_y = target[1]
       parsed.target_ang = target[2]
-      parsed.target_ppm1 = target[3]
-      parsed.target_ppm2 = target[4]
+      parsed.target_rpm1 = target[3]
+      parsed.target_rpm2 = target[4]
       parsed.enc_c1 = enc[0]
       parsed.enc_c2 = enc[1]
       parsed.e1clk = pins[0]
       parsed.e1dt = pins[1]
       parsed.e2clk = pins[2]
       parsed.e2dt = pins[3]
-      parsed.ppm1 = ppm[0]
-      parsed.ppm2 = ppm[1]
+      parsed.rpm1 = rpmMatch[0]
+      parsed.rpm2 = rpmMatch[1]
     }
 
     return parsePositionObject(parsed)
@@ -165,12 +166,12 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
       ['target_x', ['target_x']],
       ['target_y', ['target_y']],
       ['target_ang', ['target_ang', 'target_heading']],
-      ['target_ppm1', ['target_ppm1']],
-      ['target_ppm2', ['target_ppm2']],
+      ['target_rpm1', ['target_rpm1']],
+      ['target_rpm2', ['target_rpm2']],
       ['enc_c1', ['enc_c1', 'c1']],
       ['enc_c2', ['enc_c2', 'c2']],
-      ['ppm1', ['ppm1']],
-      ['ppm2', ['ppm2']],
+      ['rpm1', ['rpm1']],
+      ['rpm2', ['rpm2']],
     ]
 
     let missingCount = 0
@@ -195,8 +196,8 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
       return null
     }
 
-    result.ppm1 = getField('ppm1', 'm1') ?? 0
-    result.ppm2 = getField('ppm2', 'm2') ?? 0
+    result.rpm1 = getField('rpm1', 'm1') ?? 0
+    result.rpm2 = getField('rpm2', 'm2') ?? 0
 
     // parse pin values if present at top-level or under a 'pins' object
     const getPin = (key: string) => {
@@ -217,6 +218,8 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
 
     return result as PositionTelemetry
   }
+
+  
 
   useEffect(() => {
     let isMounted = true
@@ -268,8 +271,8 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
           ...prev.slice(-99),
           { x: parsed.robot_x, y: parsed.robot_y, timestamp: parsed.timestamp },
         ])
-        // record ppm history (using telemetry timestamp)
-        setPpmHistory((prev) => [...prev.slice(-239), { time: parsed.timestamp, ppm1: parsed.ppm1, ppm2: parsed.ppm2 }])
+        // record rpm history (using telemetry timestamp)
+        setRpmHistory((prev) => [...prev.slice(-239), { time: parsed.timestamp, rpm1: parsed.rpm1, rpm2: parsed.rpm2 }])
         // record encoder pin history (keep recent samples only)
         setPinsHistory((prev) => [...prev.slice(-20), { time: parsed.timestamp, e1CLK: parsed.e1clk, e1DT: parsed.e1dt, e2CLK: parsed.e2clk, e2DT: parsed.e2dt }])
         setIsConnected(true)
@@ -298,7 +301,7 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
     void fetchPositionData()
     const interval = window.setInterval(() => {
       void fetchPositionData()
-    }, 1000)
+    }, 100)
 
     return () => {
       isMounted = false
@@ -309,17 +312,17 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
   useEffect(() => {
     // initialize from localStorage
     try {
-      const stored = localStorage.getItem('lastPpmCommandTimestamp')
-      if (stored) setLastPpmCommandTimestamp(normalizeTimestamp(Number(stored)))
+      const stored = localStorage.getItem('lastRpmCommandTimestamp')
+      if (stored) setLastRpmCommandTimestamp(normalizeTimestamp(Number(stored)))
     } catch {}
 
     try {
-      const storedTargets = localStorage.getItem('ppmTargets')
+      const storedTargets = localStorage.getItem('rpmTargets')
       if (storedTargets) {
-        const parsedTargets = JSON.parse(storedTargets) as { ppm1?: number; ppm2?: number }
-        setPpmTargets({
-          ppm1: typeof parsedTargets.ppm1 === 'number' ? parsedTargets.ppm1 : null,
-          ppm2: typeof parsedTargets.ppm2 === 'number' ? parsedTargets.ppm2 : null,
+        const parsedTargets = JSON.parse(storedTargets) as { rpm1?: number; rpm2?: number }
+        setRpmTargets({
+          rpm1: typeof parsedTargets.rpm1 === 'number' ? parsedTargets.rpm1 : null,
+          rpm2: typeof parsedTargets.rpm2 === 'number' ? parsedTargets.rpm2 : null,
         })
       }
     } catch {}
@@ -327,26 +330,26 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
     const handler = (e: Event) => {
       try {
         const detail = (e as CustomEvent).detail as number
-        if (typeof detail === 'number') setLastPpmCommandTimestamp(normalizeTimestamp(detail))
+        if (typeof detail === 'number') setLastRpmCommandTimestamp(normalizeTimestamp(detail))
       } catch {}
     }
 
     const targetHandler = (e: Event) => {
       try {
-        const detail = (e as CustomEvent).detail as { ppm1?: number; ppm2?: number } | null
+        const detail = (e as CustomEvent).detail as { rpm1?: number; rpm2?: number } | null
         if (!detail) return
-        setPpmTargets({
-          ppm1: typeof detail.ppm1 === 'number' ? detail.ppm1 : null,
-          ppm2: typeof detail.ppm2 === 'number' ? detail.ppm2 : null,
+        setRpmTargets({
+          rpm1: typeof detail.rpm1 === 'number' ? detail.rpm1 : null,
+          rpm2: typeof detail.rpm2 === 'number' ? detail.rpm2 : null,
         })
       } catch {}
     }
 
-    window.addEventListener('lastPpmCommand', handler as EventListener)
-    window.addEventListener('ppmTargetsUpdated', targetHandler as EventListener)
+    window.addEventListener('lastRpmCommand', handler as EventListener)
+    window.addEventListener('rpmTargetsUpdated', targetHandler as EventListener)
     return () => {
-      window.removeEventListener('lastPpmCommand', handler as EventListener)
-      window.removeEventListener('ppmTargetsUpdated', targetHandler as EventListener)
+      window.removeEventListener('lastRpmCommand', handler as EventListener)
+      window.removeEventListener('rpmTargetsUpdated', targetHandler as EventListener)
     }
   }, [])
 
@@ -355,10 +358,10 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
 
     const resetTimer = window.setTimeout(() => {
       setHistory([])
-      setPpmHistory([])
-      setPpmTargets({ ppm1: null, ppm2: null })
+      setRpmHistory([])
+      setRpmTargets({ rpm1: null, rpm2: null })
       setTelemetry(EMPTY_TELEMETRY)
-      setPpmTargets({ ppm1: null, ppm2: null })
+      setRpmTargets({ rpm1: null, rpm2: null })
       setIsResetView(false)
     }, 2000)
 
@@ -397,6 +400,32 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
     if (!ts) return ''
     const d = new Date(ts)
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
+  }
+
+  const exportCsv = (rows: Array<Array<string | number>>, filename: string) => {
+    const escape = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`
+    const csv = rows.map((r) => r.map(escape).join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleDownloadRpm1 = () => {
+    const rows: Array<Array<string | number>> = [["timestamp_ms", "timestamp_iso", "rpm"]]
+    rpmHistory.forEach((d) => rows.push([d.time, new Date(d.time).toISOString(), d.rpm1]))
+    exportCsv(rows, `motor1_rpm_${Date.now()}.csv`)
+  }
+
+  const handleDownloadRpm2 = () => {
+    const rows: Array<Array<string | number>> = [["timestamp_ms", "timestamp_iso", "rpm"]]
+    rpmHistory.forEach((d) => rows.push([d.time, new Date(d.time).toISOString(), d.rpm2]))
+    exportCsv(rows, `motor2_rpm_${Date.now()}.csv`)
   }
 
   return (
@@ -501,12 +530,12 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
             <div className="stat-value">{telemetry.target_ang.toFixed(1)} deg</div>
           </div>
           <div className="stat-item">
-            <label>Target PPM 1</label>
-            <div className="stat-value">{telemetry.target_ppm1.toFixed(1)}</div>
+            <label>Target RPM 1</label>
+            <div className="stat-value">{telemetry.target_rpm1.toFixed(1)}</div>
           </div>
           <div className="stat-item">
-            <label>Target PPM 2</label>
-            <div className="stat-value">{telemetry.target_ppm2.toFixed(1)}</div>
+            <label>Target RPM 2</label>
+            <div className="stat-value">{telemetry.target_rpm2.toFixed(1)}</div>
           </div>
           <div className="stat-item">
             <label>Trail Points</label>
@@ -521,21 +550,24 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
             <div className="stat-value">{telemetry.enc_c2}</div>
           </div>
           <div className="stat-item">
-            <label>Motor PPM 1</label>
-            <div className="stat-value">{telemetry.ppm1.toFixed(1)} RPM</div>
+            <label>Motor RPM 1</label>
+            <div className="stat-value">{telemetry.rpm1.toFixed(1)} RPM</div>
           </div>
           <div className="stat-item">
-            <label>Motor PPM 2</label>
-            <div className="stat-value">{telemetry.ppm2.toFixed(1)} RPM</div>
+            <label>Motor RPM 2</label>
+            <div className="stat-value">{telemetry.rpm2.toFixed(1)} RPM</div>
           </div>
         </div>
       </div>
 
       <div className="telemetry-graph">
-        <h3>Motor RPM 1 (RPM)</h3>
+        <div className="graph-header">
+          <h3>Motor RPM 1 (RPM)</h3>
+          <button onClick={handleDownloadRpm1} className="download-btn">Download CSV</button>
+        </div>
         <div style={{ width: '100%', height: 180 }}>
           <ResponsiveContainer width="100%" height={160}>
-            <LineChart data={ppmHistory.map((d) => ({ time: d.time, rpm: d.ppm1 }))} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+            <LineChart data={rpmHistory.map((d) => ({ time: d.time, rpm: d.rpm1 }))} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="time"
@@ -544,43 +576,46 @@ export default function RobotPosition({ resetTrigger = 0 }: { resetTrigger?: num
               <YAxis label={{ value: 'RPM', angle: -90, position: 'insideLeft' }} />
               <Tooltip labelFormatter={(t) => formatTimestamp(Number(t))} />
               <Line type="monotone" dataKey="rpm" stroke="#8884d8" name="RPM 1" dot={false} isAnimationActive={false} />
-              {ppmTargets.ppm1 !== null && (
+              {rpmTargets.rpm1 !== null && (
                 <ReferenceLine
-                  y={ppmTargets.ppm1}
+                  y={rpmTargets.rpm1}
                   stroke="#00aa00"
                   strokeDasharray="5 5"
-                  label={{ value: 'Target PPM 1', position: 'insideTopLeft', fill: '#00aa00' }}
+                  label={{ value: 'Target RPM 1', position: 'insideTopLeft', fill: '#00aa00' }}
                 />
               )}
-              {lastPpmCommandTimestamp !== null && (
-                <ReferenceLine x={lastPpmCommandTimestamp} stroke="#00aa00" strokeDasharray="5 5" label={{ value: 'PPM Cmd', position: 'top', fill: '#00aa00' }} />
+              {lastRpmCommandTimestamp !== null && (
+                <ReferenceLine x={lastRpmCommandTimestamp} stroke="#00aa00" strokeDasharray="5 5" label={{ value: 'RPM Cmd', position: 'top', fill: '#00aa00' }} />
               )}
             </LineChart>
           </ResponsiveContainer>
         </div>
 
-        <h3>Motor PPM 2 (PPM)</h3>
+        <div className="graph-header">
+          <h3>Motor RPM 2 (RPM)</h3>
+          <button onClick={handleDownloadRpm2} className="download-btn">Download CSV</button>
+        </div>
         <div style={{ width: '100%', height: 180 }}>
           <ResponsiveContainer width="100%" height={160}>
-            <LineChart data={ppmHistory.map((d) => ({ time: d.time, rpm: d.ppm2 }))} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+            <LineChart data={rpmHistory.map((d) => ({ time: d.time, rpm: d.rpm2 }))} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="time"
                 tickFormatter={(t) => formatClockTime(Number(t))}
               />
-              <YAxis label={{ value: 'PPM', angle: -90, position: 'insideLeft' }} />
+              <YAxis label={{ value: 'RPM', angle: -90, position: 'insideLeft' }} />
               <Tooltip labelFormatter={(t) => formatTimestamp(Number(t))} />
               <Line type="monotone" dataKey="rpm" stroke="#82ca9d" name="RPM 2" dot={false} isAnimationActive={false} />
-              {ppmTargets.ppm2 !== null && (
+              {rpmTargets.rpm2 !== null && (
                 <ReferenceLine
-                  y={ppmTargets.ppm2}
+                  y={rpmTargets.rpm2}
                   stroke="#00aa00"
                   strokeDasharray="5 5"
-                  label={{ value: 'Target PPM 2', position: 'insideTopLeft', fill: '#00aa00' }}
+                  label={{ value: 'Target RPM 2', position: 'insideTopLeft', fill: '#00aa00' }}
                 />
               )}
-              {lastPpmCommandTimestamp !== null && (
-                <ReferenceLine x={lastPpmCommandTimestamp} stroke="#00aa00" strokeDasharray="5 5" label={{ value: 'PPM Cmd', position: 'top', fill: '#00aa00' }} />
+              {lastRpmCommandTimestamp !== null && (
+                <ReferenceLine x={lastRpmCommandTimestamp} stroke="#00aa00" strokeDasharray="5 5" label={{ value: 'RPM Cmd', position: 'top', fill: '#00aa00' }} />
               )}
             </LineChart>
           </ResponsiveContainer>

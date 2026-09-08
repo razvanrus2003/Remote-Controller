@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import '../styles/VideoFeed.css'
 
 interface VideoFeedProps {
@@ -15,6 +15,16 @@ interface ObstacleStatus {
   stale: boolean
 }
 
+interface MapInfo {
+  width: number
+  height: number
+  resolution: number
+  origin: {
+    position: { x: number; y: number; z: number }
+    orientation: { x: number; y: number; z: number; w: number }
+  }
+}
+
 export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
   const [isConnected, setIsConnected] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -23,6 +33,63 @@ export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
   const [obstacleStatus, setObstacleStatus] = useState<ObstacleStatus | null>(null)
   const baseController = (controllerUrl && controllerUrl.replace(/\/$/, ''))
   const videoStreamUrl = 'http://localhost:8080'
+  const [occupancyInfo, setOccupancyInfo] = useState<MapInfo | null>(null)
+  const [occupancyData, setOccupancyData] = useState<number[] | null>(null)
+  const occupancyCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const [autoDriveEnabled, setAutoDriveEnabled] = useState(false)
+  const [autoDriveLoading, setAutoDriveLoading] = useState(true)
+
+  useEffect(() => {
+    let mounted = true
+
+    const fetchAutoDrive = async () => {
+      try {
+        const response = await fetch(`${baseController}/command/autodrive`)
+        const data = await response.json()
+
+        if (!mounted) return
+
+        // Adjust this depending on your API response
+        setAutoDriveEnabled(Boolean(data.enabled))
+      } catch (err) {
+        console.error('Failed to fetch autodrive status', err)
+      } finally {
+        if (mounted) {
+          setAutoDriveLoading(false)
+        }
+      }
+    }
+
+    void fetchAutoDrive()
+
+    return () => {
+      mounted = false
+    }
+  }, [baseController])
+
+const toggleAutoDrive = async () => {
+  const newValue = !autoDriveEnabled
+
+  setAutoDriveEnabled(newValue)
+
+  try {
+    await fetch(`${baseController}/command/autodrive`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        enabled: newValue,
+      }),
+    })
+  } catch (err) {
+    console.error('Failed to update autodrive', err)
+
+    // revert on failure
+    setAutoDriveEnabled(!newValue)
+  }
+}
+
   useEffect(() => {
     let isMounted = true
 
@@ -57,6 +124,90 @@ export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
     }
   }, [baseController])
 
+  useEffect(() => {
+    let isMounted = true
+
+    const fetchOccupancy = async () => {
+      try {
+        const resp = await fetch(`${baseController}/occupancy-grid`)
+        const body = await resp.json()
+        const info = body.info || (body.msg && body.msg.info) || null
+        const data = body.data || (body.msg && body.msg.data) || null
+        if (!isMounted) return
+        if (info && data && Array.isArray(data)) {
+          const parsed: MapInfo = {
+            width: Number(info.width) || 0,
+            height: Number(info.height) || 0,
+            resolution: Number(info.resolution) || 0,
+            origin: {
+              position: { x: Number(info.origin?.position?.x) || 0, y: Number(info.origin?.position?.y) || 0, z: Number(info.origin?.position?.z) || 0 },
+              orientation: {
+                x: Number(info.origin?.orientation?.x) || 0,
+                y: Number(info.origin?.orientation?.y) || 0,
+                z: Number(info.origin?.orientation?.z) || 0,
+                w: Number(info.origin?.orientation?.w) || 0,
+              },
+            },
+          }
+          setOccupancyInfo(parsed)
+          setOccupancyData(Array.from(data).map((v: any) => Number(v)))
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
+
+    void fetchOccupancy()
+    const interval = window.setInterval(() => void fetchOccupancy(), 1000)
+    return () => {
+      isMounted = false
+      window.clearInterval(interval)
+    }
+  }, [baseController])
+
+  useEffect(() => {
+    if (!occupancyInfo || !occupancyData || !occupancyCanvasRef.current) return
+    const canvas = occupancyCanvasRef.current
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const w = occupancyInfo.width || 1
+    const h = occupancyInfo.height || 1
+    canvas.width = w
+    canvas.height = h
+    canvas.style.width = '200px'
+    canvas.style.height = '200px'
+    const img = ctx.createImageData(w, h)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = y * w + x
+        const v = occupancyData[idx]
+        let r: number, g: number, b: number
+
+        if (v === -1) {
+          // unexplored
+          r = 0
+          g = 0
+          b = 0
+        } else {
+          // Clamp to [0,100]
+          const t = Math.max(0, Math.min(100, v)) / 100
+
+          // Green (0) -> Red (100)
+          r = Math.round(255 * t)
+          g = Math.round(255 * (1 - t))
+          b = 0
+        }
+
+        const p = idx * 4
+        img.data[p] = r
+        img.data[p + 1] = g
+        img.data[p + 2] = b
+        img.data[p + 3] = 255
+      }
+    }
+    ctx.putImageData(img, 0, 0)
+  }, [occupancyInfo, occupancyData])
+
   const obstacleBadgeClass = obstacleStatus?.blocked
     ? 'blocked'
     : obstacleStatus?.status === 'clear'
@@ -65,6 +216,33 @@ export default function VideoFeed({ controllerUrl }: VideoFeedProps) {
 
   return (
     <div className="video-feed-section">
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span>Auto Drive</span>
+          <input
+            type="checkbox"
+            checked={autoDriveEnabled}
+            disabled={autoDriveLoading}
+            onChange={toggleAutoDrive}
+          />
+        </label>
+      </div>
+      <div className="occupancy-section">
+          <div style={{ marginTop: 12 }}>
+            <h4>Occupancy Map</h4>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <canvas ref={occupancyCanvasRef} style={{ width: 200, height: 200, border: '1px solid #ccc' }} />
+              <div style={{ fontSize: 12 }}>
+                {occupancyInfo ? (
+                  <pre style={{ margin: 0, maxWidth: 300, overflow: 'auto' }}>{JSON.stringify(occupancyInfo, null, 2)}</pre>
+                ) : (
+                  <div style={{ color: '#666' }}>No occupancy map available</div>
+                )}
+                <div style={{ marginTop: 6 }}><small>Data length: {occupancyData ? occupancyData.length : '—'}</small></div>
+              </div>
+            </div>
+          </div>
+        </div>
       <div className="streams-layout">
         <div className="video-column">
           <div className="video-header">

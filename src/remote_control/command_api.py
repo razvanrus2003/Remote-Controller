@@ -20,8 +20,15 @@ from rclpy.executors import MultiThreadedExecutor
 from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from sensor_msgs.msg import CompressedImage
+from nav_msgs.msg import OccupancyGrid
+try:
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+except Exception:
+    DurabilityPolicy = None
+    QoSProfile = None
+    ReliabilityPolicy = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,15 +38,28 @@ class CommandApiNode(Node):
     def __init__(self):
         super().__init__('remote_command_api')
         self.command_topic_name = 'command'
-        self.command_publisher = self.create_publisher(String, self.command_topic_name, 10)
+        self.command_publisher = self.create_publisher(String, self.command_topic_name, 1)
+        self.exploration_enabled_topic_name = os.environ.get('EXPLORATION_COMMAND_ENABLED_TOPIC', '/exploration_sequence_enabled')
+        self.exploration_enabled_publisher = self.create_publisher(
+            Bool,
+            self.exploration_enabled_topic_name,
+            self._settings_qos(),
+        )
         self.health_timeout_sec = 3.0
 
-        self.health_subscription = self.create_subscription(String, '/health', self.handle_health_message, 1)
-        self.telemetry_subscription = self.create_subscription(String, '/position', self.handle_telemetry, 1)
+        self.health_subscription = self.create_subscription(String, '/health', self.handle_health_message, 100)
+        self.telemetry_subscription = self.create_subscription(String, '/position', self.handle_telemetry, 100)
+        
         # Subscribe to obstacle analysis topic published by VideoMlNode
         self.latest_obstacle = None
         self.latest_obstacle_received_at = None
         self.obstacle_subscription = self.create_subscription(String, '/obstacle', self.handle_obstacle_message, 1)
+        # Subscribe to OccupancyGrid messages published on /OccupancyGrid
+        try:
+            self.occupancy_subscription = self.create_subscription(OccupancyGrid, '/occupancy_grid', self.handle_occupancy, 1)
+        except Exception:
+            # If the message type or topic isn't available at init time, it's ok; handler will still work when messages arrive
+            self.occupancy_subscription = None
         
         # Local runtime state and synchronization (replaces shared_state module)
         self.health_lock = threading.Lock()
@@ -49,12 +69,30 @@ class CommandApiNode(Node):
         self.telemetry_lock = threading.Lock()
         self.latest_telemetry = None
 
+        self.occupancy_lock = threading.Lock()
+        self.latest_occupancy = None
+        self.latest_occupancy_received_at = None
+
         self.obstacle_lock = threading.Lock()
         self.latest_obstacle_state = None
+
+        self.exploration_enabled_lock = threading.Lock()
+        self.exploration_enabled = False
 
         self.endpoint_frame_lock = threading.Lock()
         self.latest_frame_endpoint_received_at = None
         
+
+    def _settings_qos(self):
+        if QoSProfile is None:
+            return 1
+
+        qos = QoSProfile(depth=1)
+        if DurabilityPolicy is not None:
+            qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        if ReliabilityPolicy is not None:
+            qos.reliability = ReliabilityPolicy.RELIABLE
+        return qos
 
     def handle_health_message(self, msg: String):
         with self.health_lock:
@@ -64,6 +102,7 @@ class CommandApiNode(Node):
     def handle_telemetry(self, msg: String):
         with self.telemetry_lock:
             self.latest_telemetry = msg.data
+
 
     def handle_obstacle_message(self, msg: String):
         try:
@@ -78,6 +117,41 @@ class CommandApiNode(Node):
             pass
         self.latest_obstacle = obj
         self.latest_obstacle_received_at = time.monotonic()
+
+    def handle_occupancy(self, msg: OccupancyGrid):
+        try:
+            # Convert to JSON-friendly structure and keep a timestamp
+            info = msg.info
+            origin = info.origin
+            occ = {
+                'info': {
+                    'width': info.width,
+                    'height': info.height,
+                    'resolution': info.resolution,
+                    'origin': {
+                        'position': {
+                            'x': origin.position.x,
+                            'y': origin.position.y,
+                            'z': origin.position.z,
+                        },
+                        'orientation': {
+                            'x': origin.orientation.x,
+                            'y': origin.orientation.y,
+                            'z': origin.orientation.z,
+                            'w': origin.orientation.w,
+                        }
+                    }
+                },
+                'data': list(msg.data),
+            }
+            with self.occupancy_lock:
+                self.latest_occupancy = occ
+                self.latest_occupancy_received_at = time.monotonic()
+        except Exception as e:
+            try:
+                self.get_logger().error(f'Error handling occupancy grid: {e}')
+            except Exception:
+                pass
 
     def is_health_stale(self):
         with self.health_lock:
@@ -137,6 +211,33 @@ class CommandApiNode(Node):
             self.get_logger().error(f'Error publishing reset command: {e}')
             return False
 
+    def publish_exploration_enabled(self, enabled):
+        try:
+            enabled = self._coerce_bool(enabled)
+            msg = Bool()
+            msg.data = enabled
+            self.exploration_enabled_publisher.publish(msg)
+            with self.exploration_enabled_lock:
+                self.exploration_enabled = enabled
+            self.get_logger().info(f'Published exploration sequence enabled={enabled} to {self.exploration_enabled_topic_name}')
+            return True
+        except Exception as e:
+            self.get_logger().error(f'Error publishing exploration sequence setting: {e}')
+            return False
+
+    def _coerce_bool(self, value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in ('1', 'true', 'on', 'enable', 'enabled', 'yes'):
+                return True
+            if normalized in ('0', 'false', 'off', 'disable', 'disabled', 'no'):
+                return False
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        raise ValueError('enabled must be a boolean')
+
 
 def create_app(command_node: CommandApiNode):
     app = Flask(__name__)
@@ -176,7 +277,7 @@ def create_app(command_node: CommandApiNode):
                 'status': 'no_data',
             }), 503
 
-        return telemetry, 200, {'Content-Type': 'application/json'}
+        return telemetry, 200, {'Content-Type': 'text/plain'}
 
     @app.route('/obstacle', methods=['GET'])
     def get_obstacle_status():
@@ -210,6 +311,24 @@ def create_app(command_node: CommandApiNode):
             state['reason'] = 'camera feed is stale'
 
         return jsonify(state), 200
+
+    @app.route('/occupancy-grid', methods=['GET'])
+    def get_occupancy_grid():
+        with command_node.occupancy_lock:
+            occ = command_node.latest_occupancy
+            received_at = command_node.latest_occupancy_received_at
+
+        if occ is None:
+            return jsonify({'error': 'No occupancy data available', 'status': 'no_data'}), 503
+
+        # Attach simple freshness metadata
+        occ_copy = dict(occ)
+        if received_at is not None:
+            age = time.monotonic() - received_at
+            occ_copy['age_sec'] = round(age, 3)
+            occ_copy['stale'] = age > 2.0
+
+        return jsonify(occ_copy), 200
 
     @app.route('/video')
     def video_feed():
@@ -287,6 +406,66 @@ def create_app(command_node: CommandApiNode):
             return jsonify({'error': 'Failed to publish angle command'}), 500
         except Exception as e:
             logger.error(f'Error processing angle command: {e}')
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/command/autodrive', methods=['GET'])
+    def get_autodrive_setting():
+        with command_node.exploration_enabled_lock:
+            enabled = command_node.exploration_enabled
+
+        return jsonify({
+            'enabled': enabled,
+        }), 200
+
+    @app.route('/command/autodrive', methods=['POST'])
+    def set_autodrive_setting():
+        try:
+            data = request.get_json(silent=True)
+            if isinstance(data, dict):
+                if 'enabled' not in data:
+                    return jsonify({'error': "Expected JSON object with 'enabled' boolean"}), 400
+                enabled = data.get('enabled')
+            elif isinstance(data, bool):
+                enabled = data
+            else:
+                return jsonify({'error': "Expected JSON boolean or object with 'enabled' boolean"}), 400
+
+            try:
+                enabled = command_node._coerce_bool(enabled)
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+
+            success = command_node.publish_exploration_enabled(enabled)
+            if success:
+                return jsonify({
+                    'status': 'success',
+                    'enabled': enabled,
+                }), 200
+            return jsonify({'error': 'Failed to publish exploration sequence setting'}), 500
+        except Exception as e:
+            logger.error(f'Error processing exploration sequence setting: {e}')
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/command/autodrive/enable', methods=['POST'])
+    def enable_autodrive():
+        try:
+            success = command_node.publish_exploration_enabled(True)
+            if success:
+                return jsonify({'status': 'success', 'enabled': True}), 200
+            return jsonify({'error': 'Failed to enable autodrive'}), 500
+        except Exception as e:
+            logger.error(f'Error enabling autodrive: {e}')
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/command/autodrive/disable', methods=['POST'])
+    def disable_autodrive():
+        try:
+            success = command_node.publish_exploration_enabled(False)
+            if success:
+                return jsonify({'status': 'success', 'enabled': False}), 200
+            return jsonify({'error': 'Failed to disable autodrive'}), 500
+        except Exception as e:
+            logger.error(f'Error disabling autodrive: {e}')
             return jsonify({'error': str(e)}), 500
 
     @app.route('/command/pid', methods=['POST'])

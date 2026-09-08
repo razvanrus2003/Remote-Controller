@@ -40,4 +40,40 @@ def generate_launch_description():
             output='screen',
             env=dict(os.environ, DEPTH_BACKEND='fast'),
         ),
+        Node(
+            package='remote_control',
+            executable='occupancy_map',
+            name='occupancy_map',
+            output='screen',
+        ),
+        Node(
+            package='remote_control',
+            executable='exploration_target',
+            name='exploration_target',
+            output='screen',
+        ),
+        Node(
+            package='remote_control',
+            executable='map_inflation',
+            name='map_inflation',
+            output='screen',
+        ),
+        Node(
+            package='remote_control',
+            executable='astar_path',
+            name='astar_path',
+            output='screen',
+        ),
+        Node(
+            package='remote_control',
+            executable='path_splitter',
+            name='path_splitter',
+            output='screen',
+        ),
+        Node(
+            package='remote_control',
+            executable='exploration_command',
+            name='exploration_command',
+            output='screen',
+        ),
     ])

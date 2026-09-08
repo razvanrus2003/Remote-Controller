@@ -34,6 +34,12 @@ setup(
         'console_scripts': [
             'command_api = remote_control.command_api:main',
             'video_ml = remote_control.video_ml:main',
+            'occupancy_map = remote_control.occupancy_map_node:main',
+            'exploration_target = remote_control.exploration_target_node:main',
+            'map_inflation = remote_control.map_inflation_node:main',
+            'astar_path = remote_control.astar_path_node:main',
+            'path_splitter = remote_control.path_splitter_node:main',
+            'exploration_command = remote_control.exploration_command_node:main',
         ],
     },
 )
